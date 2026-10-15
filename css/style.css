@@ -1,0 +1,10 @@
+:root { --ground: #d4d3cf; --dim: #7a7975; color-scheme: light; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--ground); overflow: hidden; }
+.stage { position: fixed; inset: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#reset { position: absolute; right: 20px; top: 16px; width: 44px; height: 44px; border-radius: 50%; border: 0;
+  background: transparent; color: var(--dim); font-size: 24px; line-height: 1; cursor: pointer; }
+#reset:hover { background: rgba(0, 0, 0, 0.05); }
+#reset:focus-visible { outline: 2px solid #aaa; }
+[hidden] { display: none !important; }
