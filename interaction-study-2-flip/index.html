@@ -1,0 +1,452 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Interaction Study 2 Flip</title>
+<style>
+:root { --bg:#b9b8b3; --stage:#d6d5d1; --fg:#2b2b2a; --dim:#7a7975; color-scheme: light; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); margin: 0; overflow: hidden;
+  font: 12px/1.3 ui-monospace, "SF Mono", Menlo, monospace; }
+.stage { position: relative; height: 100%; max-width: 430px; max-height: 932px; margin: 0 auto; background: var(--stage);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+@media (min-width: 600px) { body { display: grid; place-items: center; }
+  .stage { width: 390px; height: min(844px, 100%); border-radius: 28px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.15); } }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.tag { position: absolute; left: 16px; top: 14px; color: var(--dim); letter-spacing: .06em; text-transform: uppercase; font-size: 10px; pointer-events: none; }
+#reset { position: absolute; right: 12px; top: 8px; width: 36px; height: 36px; border-radius: 50%; border: 0; background: rgba(0,0,0,0.06);
+  background: transparent; color: var(--dim); font-size: 18px; line-height: 1; cursor: pointer; }
+#reset:focus-visible { outline: 2px solid #aaa; }
+#hint { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; color: var(--dim); font-size: 10px; pointer-events: none; }
+</style>
+<div class="stage">
+  <canvas id="c"></canvas>
+  <div class="tag">Study 2 · flip · curious</div>
+  <button id="reset" aria-label="Reset">↺</button>
+  <div id="hint" hidden></div>
+</div>
+<script>
+// ---- shared stage, thread geometry, audio, cue helpers ----
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W = 390, H = 844, DPR = 1;
+function resize() {
+  const r = cvs.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = r.width; H = r.height;
+  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const N = 14;                       // number of threads
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const now = () => performance.now() / 1000;
+
+// y offset of thread i at normalized position u (0 = left anchor, 1 = right end)
+// spread: 1 = full fan, 0 = gathered into one line
+function threadY(i, u, spread, bulge) {
+  const k = (i - (N - 1) / 2) / ((N - 1) / 2);   // -1..1
+  const cy = H * 0.5;
+  const edge = 9;                                // thread spacing at the ends
+  const mid = H * 0.17 * bulge;                  // extra spacing in the middle
+  return cy + k * spread * (edge + mid * Math.sin(Math.PI * u));
+}
+
+// ---- audio ----
+let AC = null, master = null;
+function audio() {
+  if (!AC) {
+    try {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain(); master.gain.value = 0.55;
+      const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
+      master.connect(lp); lp.connect(AC.destination);
+    } catch (e) { AC = null; }
+  }
+  if (AC && AC.state === 'suspended') AC.resume();
+  return AC;
+}
+// soft, slow-attack tone (silky: no hard transient)
+function tone(freq, dur = 1.6, vol = 0.18, delay = 0, type = 'sine') {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime + delay;
+  const o = a.createOscillator(), g = a.createGain();
+  const o2 = a.createOscillator();              // slight detune for sheen
+  o.type = type; o2.type = 'sine';
+  o.frequency.value = freq; o2.frequency.value = freq * 1.003;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.06);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); o2.connect(g); g.connect(master);
+  o.start(t); o2.start(t); o.stop(t + dur + 0.05); o2.stop(t + dur + 0.05);
+}
+const SCALE = [261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3, 784.0, 880.0, 1046.5, 1174.7, 1318.5, 1568.0];
+
+// continuous voice (for stretching / gathering)
+function makeVoice(type = 'triangle') {
+  const a = audio(); if (!a) return null;
+  const o = a.createOscillator(), g = a.createGain(), f = a.createBiquadFilter();
+  o.type = type; f.type = 'lowpass'; f.frequency.value = 900; f.Q.value = 4;
+  g.gain.value = 0.0001;
+  o.connect(f); f.connect(g); g.connect(master); o.start();
+  return {
+    set(freq, vol, cutoff) {
+      const t = a.currentTime;
+      o.frequency.setTargetAtTime(freq, t, 0.05);
+      g.gain.setTargetAtTime(Math.max(vol, 0.0001), t, 0.08);
+      if (cutoff) f.frequency.setTargetAtTime(cutoff, t, 0.08);
+    },
+    off() { g.gain.setTargetAtTime(0.0001, a.currentTime, 0.15); }
+  };
+}
+
+// ---- cue helpers ----
+// ghost fingertip: soft ring + trail
+function ghost(x, y, alpha, r = 18) {
+  if (alpha <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(232,232,232,0.18)';
+  ctx.beginPath(); ctx.arc(x, y, r - 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function touchRipple(list, t) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i], age = t - p.t;
+    if (age > 0.6) { list.splice(i, 1); continue; }
+    ctx.save();
+    ctx.globalAlpha = (1 - age / 0.6) * 0.5;
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 10 + age * 60, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---- pointer helpers ----
+function pos(e) {
+  const r = cvs.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+// reset button
+document.getElementById('reset').addEventListener('click', () => { if (window.resetStudy) window.resetStudy(); });
+
+const ASSETS={"can": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 124\" width=\"100\" height=\"124\"><polygon points=\"4.0,16.0 10.2,20.5 18.8,118.5 14.0,115.0\" fill=\"#53524f\"/><polygon points=\"10.2,20.5 27.0,23.8 32.0,121.1 18.8,118.5\" fill=\"#61605d\"/><polygon points=\"27.0,23.8 50.0,25.0 50.0,122.0 32.0,121.1\" fill=\"#7f7e7a\"/><polygon points=\"50.0,25.0 73.0,23.8 68.0,121.1 50.0,122.0\" fill=\"#8f8e8a\"/><polygon points=\"73.0,23.8 89.8,20.5 81.2,118.5 68.0,121.1\" fill=\"#7f7e7a\"/><polygon points=\"89.8,20.5 96.0,16.0 86.0,115.0 81.2,118.5\" fill=\"#706f6b\"/><polygon points=\"96.0,16.0 92.5,19.4 82.5,22.4 67.6,24.3 50.0,25.0 32.4,24.3 17.5,22.4 7.5,19.4 4.0,16.0 7.5,12.6 17.5,9.6 32.4,7.7 50.0,7.0 67.6,7.7 82.5,9.6 92.5,12.6\" fill=\"#8f8e8a\"/><polygon points=\"90.0,16.0 87.0,18.7 78.3,21.0 65.3,22.5 50.0,23.0 34.7,22.5 21.7,21.0 13.0,18.7 10.0,16.0 13.0,13.3 21.7,11.0 34.7,9.5 50.0,9.0 65.3,9.5 78.3,11.0 87.0,13.3\" fill=\"#3a3937\"/><polygon points=\"96.0,16.0 92.5,19.4 82.5,22.4 67.6,24.3 50.0,25.0 32.4,24.3 17.5,22.4 7.5,19.4 4.0,16.0 4.0,13.5 7.5,16.9 17.5,19.9 32.4,21.8 50.0,22.5 67.6,21.8 82.5,19.9 92.5,16.9 96.0,13.5\" fill=\"#9c9b97\"/></svg>", "front": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><polygon points=\"0.0,0.0 230.0,0.0 128.8,132.0\" fill=\"#f6f6f3\"/><polygon points=\"230.0,0.0 230.0,300.0 128.8,132.0\" fill=\"#eeeeea\"/><polygon points=\"230.0,300.0 0.0,300.0 128.8,132.0\" fill=\"#e6e6e1\"/><polygon points=\"0.0,300.0 0.0,0.0 128.8,132.0\" fill=\"#dddcd7\"/><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">New balance</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></svg>", "back": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><polygon points=\"0.0,0.0 230.0,0.0 128.8,132.0\" fill=\"#f6f6f3\"/><polygon points=\"230.0,0.0 230.0,300.0 128.8,132.0\" fill=\"#eeeeea\"/><polygon points=\"230.0,300.0 0.0,300.0 128.8,132.0\" fill=\"#e6e6e1\"/><polygon points=\"0.0,300.0 0.0,0.0 128.8,132.0\" fill=\"#dddcd7\"/><g transform=\"translate(230 0) scale(-1 1)\" opacity=\"0.05\"><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">New balance</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></g></svg>", "front_plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><rect width=\"230\" height=\"300\" fill=\"#f4f3ef\"/><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"700\" fill=\"#c23b2e\" text-anchor=\"start\" letter-spacing=\"1.2\">PAYMENT OVERDUE</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#c23b2e\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></svg>"};
+// ---- shared for the statement studies: light low-poly scene, assets, mouse cues, sounds ----
+const COL = { wall: '#d6d5d1', floor: '#c4c3be', ink: '#2b2b2a', under: '#b9b8b3', shadow: 'rgba(0,0,0,0.10)' };
+const IMG = {};
+for (const k in ASSETS) { const im = new Image(); im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ASSETS[k]); IMG[k] = im; }
+
+const HORIZON = () => H * 0.34;
+function groundY(z) { return lerp(H * 0.9, H * 0.4, z); }
+function zScale(z) { return lerp(1, 0.32, z); }
+function worldToScreen(x, z, h) { const s = zScale(z); return { x: W / 2 + x * W * 0.9 * s, y: groundY(z) - h * H * 0.45 * s, s }; }
+
+let brighten = 0;      // used by the throw study
+function drawRoom() {
+  ctx.fillStyle = COL.wall; ctx.fillRect(0, 0, W, H);
+  // floor: two flat facets + board seams in the wall colour
+  ctx.fillStyle = COL.floor;
+  ctx.beginPath(); ctx.moveTo(0, HORIZON()); ctx.lineTo(W, HORIZON()); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.035)';
+  ctx.beginPath(); ctx.moveTo(W / 2, HORIZON()); ctx.lineTo(W, HORIZON()); ctx.lineTo(W, H); ctx.fill();
+  ctx.strokeStyle = COL.wall; ctx.lineWidth = 1.2;
+  const vx = W / 2, vy = HORIZON() - H * 0.3;
+  for (let i = -7; i <= 7; i++) {
+    const bx = W / 2 + i * W * 0.2, t = (HORIZON() - vy) / (H - vy);
+    ctx.beginPath(); ctx.moveTo(lerp(vx, bx, t), HORIZON()); ctx.lineTo(bx, H); ctx.stroke();
+  }
+  if (brighten > 0.001) { ctx.fillStyle = `rgba(255,255,255,${brighten})`; ctx.fillRect(0, 0, W, H); }
+}
+
+const CAN_Z = 1.0, CAN_W = 58, CAN_R = 0.075;
+function canH() { return CAN_W / (H * 0.45 * zScale(CAN_Z)); }       // rim height in world units, matched to the drawing
+function drawCan(dy = 0) {
+  const b = worldToScreen(0, CAN_Z, 0), h = CAN_W * 1.24;
+  if (IMG.can.complete) ctx.drawImage(IMG.can, b.x - CAN_W / 2, b.y - h * (120 / 124) + dy, CAN_W, h);
+  ctx.fillStyle = COL.shadow; ctx.beginPath(); ctx.ellipse(b.x, b.y + 2, CAN_W * 0.42, 4, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---- low-poly crumpled ball (same scheme as crushing_01_ball.svg) ----
+function makeBall(seed) {
+  let s = seed; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const n = 11, outer = [], inner = [];
+  for (let i = 0; i < n; i++) {
+    const a = i / n * Math.PI * 2 + (rnd() - 0.5) * 0.24; outer.push([Math.cos(a) * (0.82 + rnd() * 0.26), Math.sin(a) * (0.82 + rnd() * 0.26)]);
+    const b = (i + 0.5) / n * Math.PI * 2, r = 0.5 * (0.7 + rnd() * 0.5); inner.push([Math.cos(b) * r - 0.08, Math.sin(b) * r - 0.1]);
+  }
+  const tris = [];
+  for (let i = 0; i < n; i++) {
+    const a = outer[i], b = outer[(i + 1) % n], m = inner[i], m0 = inner[(i - 1 + n) % n];
+    tris.push([a, b, m], [a, m, m0], [m0, m, [-0.12, -0.15]]);
+  }
+  tris.forEach(t => t.j = (rnd() - 0.5) * 2.4);
+  return { outer, tris };
+}
+var SHADE_OFF = 0;
+const SHADES = ['#f3f3f0', '#e8e8e4', '#dcdbd6', '#cfcec9', '#c2c1bc', '#b3b2ad', '#a3a29d'];
+function triShade(t, rot) {
+  const mx = (t[0][0] + t[1][0] + t[2][0]) / 3, my = (t[0][1] + t[1][1] + t[2][1]) / 3;
+  const c = Math.cos(rot), s = Math.sin(rot), x = mx * c - my * s, y = mx * s + my * c;
+  return SHADES[Math.max(0, Math.min(6, Math.round(3 + (x + y) * 2.2 + t.j + SHADE_OFF)))];
+}
+function drawBall(ball, cx, cy, r, rot = 0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(cx, cy); ctx.rotate(rot);
+  for (const t of ball.tris) {
+    ctx.fillStyle = triShade(t, rot);
+    ctx.beginPath(); ctx.moveTo(t[0][0] * r, t[0][1] * r); ctx.lineTo(t[1][0] * r, t[1][1] * r); ctx.lineTo(t[2][0] * r, t[2][1] * r); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 0.6; ctx.stroke();   // hide hairline seams
+  }
+  ctx.restore();
+}
+
+// ---- mouse cue: a soft ghost cursor (filled, no outlines) ----
+function ghostCursor(x, y, alpha, pressed = 0) {
+  if (alpha <= 0.01) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  if (pressed > 0) { ctx.fillStyle = `rgba(43,43,42,${0.18 * pressed})`; ctx.beginPath(); ctx.arc(x, y, 10 + 8 * (1 - pressed), 0, Math.PI * 2); ctx.fill(); }
+  ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(43,43,42,0.55)';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 17); ctx.lineTo(4.5, 13); ctx.lineTo(7.5, 19.5); ctx.lineTo(10, 18.4); ctx.lineTo(7, 12); ctx.lineTo(12.5, 12); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function softRipple(list, t) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i], age = t - p.t; if (age > 0.5) { list.splice(i, 1); continue; }
+    ctx.fillStyle = `rgba(43,43,42,${(1 - age / 0.5) * 0.12})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 6 + age * 50, 0, Math.PI * 2); ctx.fill();
+  }
+}
+const easeIO = x => x < 0 ? 0 : x > 1 ? 1 : x * x * (3 - 2 * x);
+
+// ---- noise sounds ----
+let NOISE = null;
+function noiseBuf() {
+  const a = audio(); if (!a) return null;
+  if (!NOISE) { NOISE = a.createBuffer(1, a.sampleRate, a.sampleRate); const d = NOISE.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  return NOISE;
+}
+function burst({ dur = 0.05, freq = 3000, q = 1, vol = 0.2, delay = 0, type = 'bandpass', attack = 0.002 } = {}) {
+  const a = audio(), buf = noiseBuf(); if (!a || !buf) return;
+  const t = a.currentTime + delay, s = a.createBufferSource(); s.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+  const g = a.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.02);
+}
+function rustle(k = 1) { for (let i = 0; i < 1 + Math.floor(Math.random() * 3 * k); i++) burst({ dur: 0.03 + Math.random() * 0.05, freq: 1500 + Math.random() * 4000, q: 1.5 + Math.random() * 3, vol: 0.06 * k, delay: i * 0.015 }); }
+function thud(vol = 0.3, freq = 90) {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime, o = a.createOscillator(), g = a.createGain();
+  o.frequency.setValueAtTime(freq * 1.8, t); o.frequency.exponentialRampToValueAtTime(freq, t + 0.1);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.35);
+}
+function makeNoiseVoice(type = 'bandpass') {
+  const a = audio(), buf = noiseBuf(); if (!a || !buf) return null;
+  const s = a.createBufferSource(); s.buffer = buf; s.loop = true;
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = 600; f.Q.value = 0.8;
+  const g = a.createGain(); g.gain.value = 0.0001; s.connect(f); f.connect(g); g.connect(master); s.start();
+  return { set(fr, v, q) { const t = a.currentTime; f.frequency.setTargetAtTime(fr, t, 0.05); g.gain.setTargetAtTime(Math.max(v, 0.0001), t, 0.06); if (q) f.Q.setTargetAtTime(q, t, 0.05); },
+           off() { g.gain.setTargetAtTime(0.0001, a.currentTime, 0.1); } };
+}
+// mouse only: these studies read hover + press, so ignore touch
+const isMouse = e => e.pointerType === 'mouse' || e.pointerType === 'pen';
+
+</script>
+<script>
+// STUDY 2 — FLIP · CURIOUS  (asset: curious_01_tug.svg)
+// A blank sheet, face down. Hover near any edge: a hand fades in gripping that edge and gives it small tugs,
+// and an arrow shows which way to drag. Drag across to turn the sheet over around its middle.
+const PW = 230, PH = 300, K = 1 / 700, EDGE = 26;
+let FRONT = null, BACK = null;
+function buildFaces() {
+  if (FRONT || !IMG.front_plain.complete) return;
+  FRONT = document.createElement('canvas'); FRONT.width = PW * 2; FRONT.height = PH * 2;
+  FRONT.getContext('2d').drawImage(IMG.front_plain, 0, 0, PW * 2, PH * 2);
+  BACK = document.createElement('canvas'); BACK.width = PW * 2; BACK.height = PH * 2;
+  const g = BACK.getContext('2d'); g.fillStyle = '#f4f3ef'; g.fillRect(0, 0, PW * 2, PH * 2);
+  g.globalAlpha = 0.012; g.translate(PW * 2, 0); g.scale(-1, 1); g.drawImage(IMG.front_plain, 0, 0, PW * 2, PH * 2);   // ink showing through
+}
+let S;
+function resetStudy() {
+  S = { phi: 0, vel: 0, target: 0, state: 'back', mouse: null, edge: null, grip: 0.5, handA: 0, drag: false, start: null,
+        ripples: [], voice: S && S.voice, lastNote: 0 };
+  cvs.style.cursor = 'default';
+}
+window.resetStudy = resetStudy; resetStudy();
+const C = () => ({ x: W / 2, y: H * 0.48 });
+// edges: dir = unit vector pointing from that edge across the sheet (the drag direction)
+const EDGES = {
+  left: { axis: 'v', s: -1, dir: [1, 0] }, right: { axis: 'v', s: 1, dir: [-1, 0] },
+  top: { axis: 'h', s: -1, dir: [0, 1] }, bottom: { axis: 'h', s: 1, dir: [0, -1] },
+};
+function nearestEdge(p) {
+  const c = C(), dx = p.x - c.x, dy = p.y - c.y;
+  if (Math.abs(dx) > PW / 2 + EDGE || Math.abs(dy) > PH / 2 + EDGE) return null;
+  const cand = [['left', Math.abs(dx + PW / 2)], ['right', Math.abs(dx - PW / 2)], ['top', Math.abs(dy + PH / 2)], ['bottom', Math.abs(dy - PH / 2)]]
+    .sort((a, b) => a[1] - b[1])[0];
+  return cand[1] < EDGE ? cand[0] : null;
+}
+
+cvs.addEventListener('pointermove', e => {
+  if (!isMouse(e)) return; S.mouse = pos(e);
+  if (S.drag) {
+    const E = EDGES[S.edge], v = [S.mouse.x - S.start.x, S.mouse.y - S.start.y];
+    const along = v[0] * E.dir[0] + v[1] * E.dir[1];
+    S.target = clamp(along / ((E.axis === 'v' ? PW : PH) * 0.95), 0, 1) * Math.PI;
+  }
+});
+cvs.addEventListener('pointerleave', () => { S.mouse = null; });
+cvs.addEventListener('pointerdown', e => {
+  if (!isMouse(e)) return; audio();
+  const p = pos(e);
+  if (S.state !== 'back') return;
+  const ed = nearestEdge(p);
+  if (ed) { cvs.setPointerCapture(e.pointerId); S.edge = ed; S.drag = true; S.start = p; rustle(0.4); if (!S.voice) S.voice = makeNoiseVoice('highpass'); }
+  else S.ripples.push({ x: p.x, y: p.y, t: now() });
+});
+function endDrag() {
+  if (!S.drag) return; S.drag = false;
+  if (S.phi > Math.PI / 2) { S.target = Math.PI; S.state = 'turning'; } else { S.target = 0; }
+}
+cvs.addEventListener('pointerup', endDrag);
+cvs.addEventListener('pointercancel', endDrag);
+cvs.addEventListener('lostpointercapture', endDrag);
+window.addEventListener('pointerup', endDrag);
+
+function frame() {
+  const t = now(); buildFaces();
+  // hover: which edge, where along it
+  let hoverEdge = null;
+  if (S.state === 'back' && !S.drag && S.mouse) {
+    hoverEdge = nearestEdge(S.mouse);
+    if (hoverEdge) {
+      if (hoverEdge !== S.edge) { S.edge = hoverEdge; S.handA = 0; rustle(0.2); }
+      const c = C(), E = EDGES[hoverEdge];
+      S.grip = 0.5;   // the glove holds the middle of the edge; it does not follow the cursor
+    }
+  }
+  const showHand = (hoverEdge || S.drag) && S.state === 'back';
+  S.handA = lerp(S.handA, showHand ? 1 : 0, 0.12);
+  if (S.mouse) cvs.style.cursor = showHand ? 'none' : 'default';
+  // tug: small lifts of the gripped edge, a couple of times a second
+  const tug = hoverEdge ? Math.max(0, Math.sin(t * 7)) * Math.max(0, Math.sin(t * 2.2)) * 0.22 : 0;
+  if (!S.drag && S.state === 'back') S.target = tug;
+  if (hoverEdge && tug > 0.15 && Math.random() < 0.05) rustle(0.15);
+
+  if (S.drag && S.phi > Math.PI * 0.8) { S.drag = false; S.target = Math.PI; S.state = 'turning'; }   // close enough: it finishes itself
+  S.vel += (S.target - S.phi) * (S.drag ? 0.16 : 0.08); S.vel *= S.drag ? 0.72 : 0.8; S.phi += S.vel;
+  const spin = Math.abs(S.vel);
+  if (S.voice) S.voice.set(3000 + spin * 6000, Math.min(0.08, spin * 0.6), 0.6);
+  const step = Math.floor(S.phi / (Math.PI / 6));
+  if (S.drag && step > S.lastNote) tone(392 * Math.pow(1.06, step), 0.5, 0.05);    // rising, questioning
+  S.lastNote = step;
+  if (S.state === 'turning' && Math.abs(S.phi - Math.PI) < 0.02 && spin < 0.003) {
+    S.state = 'front'; tone(330, 1.4, 0.06); tone(262, 1.8, 0.05, 0.25);
+  }
+
+  // ---- draw ----
+  ctx.fillStyle = '#e4e3df'; ctx.fillRect(0, 0, W, H);
+  drawCard();
+  if (S.handA > 0.02 && S.edge) drawGripAndArrow();
+  softRipple(S.ripples, t);
+  requestAnimationFrame(frame);
+}
+
+// rigid turn around the axis through the centre, parallel to the gripped edge; slight flex in the middle
+function sample(edge, u) {     // u: -0.5..0.5 across the sheet, positive = gripped side
+  const E = EDGES[edge], L = E.axis === 'v' ? PW : PH, q = u * L, ph = S.phi;
+  const flex = Math.sin(ph) * 10 * (1 - 4 * u * u);
+  return { along: E.s * q * Math.cos(ph), h: q * Math.sin(ph) + flex };
+}
+function drawCard() {
+  if (!FRONT) return;
+  const c = C(), edge = S.edge || 'right', E = EDGES[edge], v = E.axis === 'v', L = v ? PW : PH, Wd = v ? PH : PW;
+  const n = 120, cs = Math.cos(S.phi), front = cs < 0;
+  // soft shadow
+  ctx.save(); ctx.filter = 'blur(14px)'; ctx.fillStyle = 'rgba(40,38,35,0.16)';
+  const sw = (v ? PW * Math.abs(cs) : PW) + 10, sh = (v ? PH : PH * Math.abs(cs)) + 10;
+  ctx.fillRect(c.x - sw / 2 + 8, c.y - sh / 2 + 14, sw, sh); ctx.restore();
+  const strips = [];
+  for (let i = 0; i < n; i++) {
+    const u0 = i / n - 0.5, u1 = (i + 1) / n - 0.5;
+    const a = sample(edge, u0 * E.s), b = sample(edge, u1 * E.s);
+    strips.push({ i, a, b, h: (a.h + b.h) / 2 });
+  }
+  strips.sort((p, q) => p.h - q.h);
+  for (const st of strips) {
+    const sc0 = 1 + st.a.h * K, sc1 = 1 + st.b.h * K;
+    const p0 = st.a.along * sc0, p1 = st.b.along * sc1;
+    const lo = Math.min(p0, p1) - 0.4, len = Math.abs(p1 - p0) + 1.6, wid = Wd * (sc0 + sc1) / 2;
+    // source slice: back face in place, front face mirrored so it reads correctly once turned
+    const img = front ? FRONT : BACK;
+    const slice = (front ? n - 1 - st.i : st.i) / n;
+    ctx.save();
+    if (v) { ctx.drawImage(img, slice * PW * 2, 0, PW * 2 / n + 0.5, PH * 2, c.x + lo, c.y - wid / 2, len, wid); }
+    else { ctx.drawImage(img, 0, slice * PH * 2, PW * 2, PH * 2 / n + 0.5, c.x - wid / 2, c.y + lo, wid, len); }
+    // shading by tilt (relative to flat)
+    const dl = st.b.along - st.a.along, tilt = Math.atan2(Math.sign(dl || 1) * (st.b.h - st.a.h), Math.abs(dl) || 0.0001);
+    const lit = (Math.cos(tilt + 0.45) - Math.cos(0.45)) * 0.6;
+    ctx.fillStyle = lit < 0 ? `rgba(30,28,25,${-lit * 0.5})` : `rgba(255,255,255,${lit * 0.5})`;
+    if (v) ctx.fillRect(c.x + lo, c.y - wid / 2, len, wid); else ctx.fillRect(c.x - wid / 2, c.y + lo, wid, len);
+    ctx.restore();
+  }
+}
+function edgePoint() {
+  const c = C(), E = EDGES[S.edge], v = E.axis === 'v';
+  const s = sample(S.edge, 0.5), sc = 1 + s.h * K;
+  const along = s.along * sc;
+  const cross = ((S.grip - 0.5) * (v ? PH : PW)) * sc;
+  return v ? { x: c.x + along, y: c.y + cross } : { x: c.x + cross, y: c.y + along };
+}
+function drawGripAndArrow() {
+  const E = EDGES[S.edge], p = edgePoint(), a = S.handA;
+  const ang = Math.atan2(E.dir[1], E.dir[0]);      // local +x points across the sheet
+  // low-poly white glove gripping the edge; pulls back a little with each tug
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(p.x, p.y); ctx.rotate(ang);
+  ctx.translate(14 - Math.min(0.3, S.phi) * 40, 0);
+  glove(1.12, 0.45);
+  ctx.restore();
+  // cue: a stemless two-line chevron that slides in the drag direction (hidden while dragging)
+  const show = S.drag ? 0 : a;
+  if (show > 0.02) {
+    const c = C(), L = (E.axis === 'v' ? PW : PH) * 0.5;
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(ang);
+    ctx.strokeStyle = '#3a3834'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let i = 0; i < 2; i++) {
+      const f = (now() * 0.9 + i * 0.5) % 1, x = -L / 2 + f * L;
+      ctx.globalAlpha = show * Math.sin(f * Math.PI) * 0.85;
+      ctx.beginPath(); ctx.moveTo(x - 12, -16); ctx.lineTo(x + 4, 0); ctx.lineTo(x - 12, 16); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// simple low-poly white glove, fingers pointing along +x toward the sheet; origin = where the fingertips meet the edge
+const GL = ['#ffffff', '#f3f2ee', '#e6e5e0', '#d6d5d0', '#c4c3be'];
+function facet(a, b, c, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(...c); ctx.closePath(); ctx.fill(); ctx.strokeStyle = col; ctx.lineWidth = 0.7; ctx.stroke(); }
+function quad(a, b, c, d, c1, c2) { facet(a, b, c, c1); facet(a, c, d, c2); }
+function glove(sc, curl) {
+  ctx.save(); ctx.scale(sc, sc);
+  ctx.save(); ctx.globalAlpha *= 0.12; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(-30, 30, 42, 10, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  quad([-80, -24], [-62, -28], [-60, 26], [-80, 22], GL[3], GL[4]);                                  // cuff
+  const palm = [[-62, -27], [-26, -32], [-6, -24], [-4, 20], [-22, 30], [-60, 25]], pc = [-36, -2];
+  palm.forEach((pt, i) => facet(pt, palm[(i + 1) % palm.length], pc, GL[[0, 1, 2, 3, 2, 1][i]]));
+  [-21, -8, 5, 17].forEach((ry, i) => {                                                               // fingers over the edge
+    const w = 5.8, l1 = [17, 19, 18, 14][i] * (1 - curl * 0.3), l2 = [14, 15, 14, 11][i] * (1 - curl * 0.6);
+    const k0 = [-6, ry], k1 = [k0[0] + l1, ry], k2 = [k1[0] + l2, ry];
+    quad([k0[0], ry - w], [k1[0], ry - w], [k1[0], ry + w], [k0[0], ry + w], GL[1], GL[2]);
+    quad([k1[0], ry - w * 0.9], [k2[0], ry - w * 0.8], [k2[0], ry + w * 0.8], [k1[0], ry + w * 0.9], GL[2], GL[3]);
+  });
+  const t0 = [-30, 26], t1 = [-8, 34], t2 = [6, 30];                                                  // thumb under
+  quad([t0[0], t0[1] - 7], t1, [t1[0], t1[1] + 7], [t0[0] - 4, t0[1] + 7], GL[1], GL[3]);
+  facet([t1[0], t1[1] - 6], t2, [t1[0], t1[1] + 7], GL[2]);
+  ctx.restore();
+}
+requestAnimationFrame(frame);
+
+</script>
+
+</body></html>

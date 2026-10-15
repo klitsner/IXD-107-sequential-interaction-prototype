@@ -1,0 +1,435 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Interaction Study 1 Pick Up</title>
+<style>
+:root { --bg:#b9b8b3; --stage:#d6d5d1; --fg:#2b2b2a; --dim:#7a7975; color-scheme: light; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); margin: 0; overflow: hidden;
+  font: 12px/1.3 ui-monospace, "SF Mono", Menlo, monospace; }
+.stage { position: relative; height: 100%; max-width: 430px; max-height: 932px; margin: 0 auto; background: var(--stage);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+@media (min-width: 600px) { body { display: grid; place-items: center; }
+  .stage { width: 390px; height: min(844px, 100%); border-radius: 28px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.15); } }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.tag { position: absolute; left: 16px; top: 14px; color: var(--dim); letter-spacing: .06em; text-transform: uppercase; font-size: 10px; pointer-events: none; }
+#reset { position: absolute; right: 12px; top: 8px; width: 36px; height: 36px; border-radius: 50%; border: 0; background: rgba(0,0,0,0.06);
+  background: transparent; color: var(--dim); font-size: 18px; line-height: 1; cursor: pointer; }
+#reset:focus-visible { outline: 2px solid #aaa; }
+#hint { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; color: var(--dim); font-size: 10px; pointer-events: none; }
+</style>
+<div class="stage">
+  <canvas id="c"></canvas>
+  <div class="tag">Study 1 · pick up · drafty</div>
+  <button id="reset" aria-label="Reset">↺</button>
+  <div id="hint" hidden></div>
+</div>
+<script>
+// ---- shared stage, thread geometry, audio, cue helpers ----
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W = 390, H = 844, DPR = 1;
+function resize() {
+  const r = cvs.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = r.width; H = r.height;
+  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const N = 14;                       // number of threads
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const now = () => performance.now() / 1000;
+
+// y offset of thread i at normalized position u (0 = left anchor, 1 = right end)
+// spread: 1 = full fan, 0 = gathered into one line
+function threadY(i, u, spread, bulge) {
+  const k = (i - (N - 1) / 2) / ((N - 1) / 2);   // -1..1
+  const cy = H * 0.5;
+  const edge = 9;                                // thread spacing at the ends
+  const mid = H * 0.17 * bulge;                  // extra spacing in the middle
+  return cy + k * spread * (edge + mid * Math.sin(Math.PI * u));
+}
+
+// ---- audio ----
+let AC = null, master = null;
+function audio() {
+  if (!AC) {
+    try {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain(); master.gain.value = 0.55;
+      const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
+      master.connect(lp); lp.connect(AC.destination);
+    } catch (e) { AC = null; }
+  }
+  if (AC && AC.state === 'suspended') AC.resume();
+  return AC;
+}
+// soft, slow-attack tone (silky: no hard transient)
+function tone(freq, dur = 1.6, vol = 0.18, delay = 0, type = 'sine') {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime + delay;
+  const o = a.createOscillator(), g = a.createGain();
+  const o2 = a.createOscillator();              // slight detune for sheen
+  o.type = type; o2.type = 'sine';
+  o.frequency.value = freq; o2.frequency.value = freq * 1.003;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.06);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); o2.connect(g); g.connect(master);
+  o.start(t); o2.start(t); o.stop(t + dur + 0.05); o2.stop(t + dur + 0.05);
+}
+const SCALE = [261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3, 784.0, 880.0, 1046.5, 1174.7, 1318.5, 1568.0];
+
+// continuous voice (for stretching / gathering)
+function makeVoice(type = 'triangle') {
+  const a = audio(); if (!a) return null;
+  const o = a.createOscillator(), g = a.createGain(), f = a.createBiquadFilter();
+  o.type = type; f.type = 'lowpass'; f.frequency.value = 900; f.Q.value = 4;
+  g.gain.value = 0.0001;
+  o.connect(f); f.connect(g); g.connect(master); o.start();
+  return {
+    set(freq, vol, cutoff) {
+      const t = a.currentTime;
+      o.frequency.setTargetAtTime(freq, t, 0.05);
+      g.gain.setTargetAtTime(Math.max(vol, 0.0001), t, 0.08);
+      if (cutoff) f.frequency.setTargetAtTime(cutoff, t, 0.08);
+    },
+    off() { g.gain.setTargetAtTime(0.0001, a.currentTime, 0.15); }
+  };
+}
+
+// ---- cue helpers ----
+// ghost fingertip: soft ring + trail
+function ghost(x, y, alpha, r = 18) {
+  if (alpha <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(232,232,232,0.18)';
+  ctx.beginPath(); ctx.arc(x, y, r - 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function touchRipple(list, t) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i], age = t - p.t;
+    if (age > 0.6) { list.splice(i, 1); continue; }
+    ctx.save();
+    ctx.globalAlpha = (1 - age / 0.6) * 0.5;
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 10 + age * 60, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---- pointer helpers ----
+function pos(e) {
+  const r = cvs.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+// reset button
+document.getElementById('reset').addEventListener('click', () => { if (window.resetStudy) window.resetStudy(); });
+
+const ASSETS={"can": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 124\" width=\"100\" height=\"124\"><polygon points=\"4.0,16.0 10.2,20.5 18.8,118.5 14.0,115.0\" fill=\"#53524f\"/><polygon points=\"10.2,20.5 27.0,23.8 32.0,121.1 18.8,118.5\" fill=\"#61605d\"/><polygon points=\"27.0,23.8 50.0,25.0 50.0,122.0 32.0,121.1\" fill=\"#7f7e7a\"/><polygon points=\"50.0,25.0 73.0,23.8 68.0,121.1 50.0,122.0\" fill=\"#8f8e8a\"/><polygon points=\"73.0,23.8 89.8,20.5 81.2,118.5 68.0,121.1\" fill=\"#7f7e7a\"/><polygon points=\"89.8,20.5 96.0,16.0 86.0,115.0 81.2,118.5\" fill=\"#706f6b\"/><polygon points=\"96.0,16.0 92.5,19.4 82.5,22.4 67.6,24.3 50.0,25.0 32.4,24.3 17.5,22.4 7.5,19.4 4.0,16.0 7.5,12.6 17.5,9.6 32.4,7.7 50.0,7.0 67.6,7.7 82.5,9.6 92.5,12.6\" fill=\"#8f8e8a\"/><polygon points=\"90.0,16.0 87.0,18.7 78.3,21.0 65.3,22.5 50.0,23.0 34.7,22.5 21.7,21.0 13.0,18.7 10.0,16.0 13.0,13.3 21.7,11.0 34.7,9.5 50.0,9.0 65.3,9.5 78.3,11.0 87.0,13.3\" fill=\"#3a3937\"/><polygon points=\"96.0,16.0 92.5,19.4 82.5,22.4 67.6,24.3 50.0,25.0 32.4,24.3 17.5,22.4 7.5,19.4 4.0,16.0 4.0,13.5 7.5,16.9 17.5,19.9 32.4,21.8 50.0,22.5 67.6,21.8 82.5,19.9 92.5,16.9 96.0,13.5\" fill=\"#9c9b97\"/></svg>", "front": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><polygon points=\"0.0,0.0 230.0,0.0 128.8,132.0\" fill=\"#f6f6f3\"/><polygon points=\"230.0,0.0 230.0,300.0 128.8,132.0\" fill=\"#eeeeea\"/><polygon points=\"230.0,300.0 0.0,300.0 128.8,132.0\" fill=\"#e6e6e1\"/><polygon points=\"0.0,300.0 0.0,0.0 128.8,132.0\" fill=\"#dddcd7\"/><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">New balance</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></svg>", "back": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><polygon points=\"0.0,0.0 230.0,0.0 128.8,132.0\" fill=\"#f6f6f3\"/><polygon points=\"230.0,0.0 230.0,300.0 128.8,132.0\" fill=\"#eeeeea\"/><polygon points=\"230.0,300.0 0.0,300.0 128.8,132.0\" fill=\"#e6e6e1\"/><polygon points=\"0.0,300.0 0.0,0.0 128.8,132.0\" fill=\"#dddcd7\"/><g transform=\"translate(230 0) scale(-1 1)\" opacity=\"0.05\"><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">New balance</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></g></svg>", "front_plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><rect width=\"230\" height=\"300\" fill=\"#f4f3ef\"/><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"700\" fill=\"#c23b2e\" text-anchor=\"start\" letter-spacing=\"1.2\">PAYMENT OVERDUE</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#c23b2e\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></svg>"};
+// ---- shared for the statement studies: light low-poly scene, assets, mouse cues, sounds ----
+const COL = { wall: '#d6d5d1', floor: '#c4c3be', ink: '#2b2b2a', under: '#b9b8b3', shadow: 'rgba(0,0,0,0.10)' };
+const IMG = {};
+for (const k in ASSETS) { const im = new Image(); im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ASSETS[k]); IMG[k] = im; }
+
+const HORIZON = () => H * 0.34;
+function groundY(z) { return lerp(H * 0.9, H * 0.4, z); }
+function zScale(z) { return lerp(1, 0.32, z); }
+function worldToScreen(x, z, h) { const s = zScale(z); return { x: W / 2 + x * W * 0.9 * s, y: groundY(z) - h * H * 0.45 * s, s }; }
+
+let brighten = 0;      // used by the throw study
+function drawRoom() {
+  ctx.fillStyle = COL.wall; ctx.fillRect(0, 0, W, H);
+  // floor: two flat facets + board seams in the wall colour
+  ctx.fillStyle = COL.floor;
+  ctx.beginPath(); ctx.moveTo(0, HORIZON()); ctx.lineTo(W, HORIZON()); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.035)';
+  ctx.beginPath(); ctx.moveTo(W / 2, HORIZON()); ctx.lineTo(W, HORIZON()); ctx.lineTo(W, H); ctx.fill();
+  ctx.strokeStyle = COL.wall; ctx.lineWidth = 1.2;
+  const vx = W / 2, vy = HORIZON() - H * 0.3;
+  for (let i = -7; i <= 7; i++) {
+    const bx = W / 2 + i * W * 0.2, t = (HORIZON() - vy) / (H - vy);
+    ctx.beginPath(); ctx.moveTo(lerp(vx, bx, t), HORIZON()); ctx.lineTo(bx, H); ctx.stroke();
+  }
+  if (brighten > 0.001) { ctx.fillStyle = `rgba(255,255,255,${brighten})`; ctx.fillRect(0, 0, W, H); }
+}
+
+const CAN_Z = 1.0, CAN_W = 58, CAN_R = 0.075;
+function canH() { return CAN_W / (H * 0.45 * zScale(CAN_Z)); }       // rim height in world units, matched to the drawing
+function drawCan(dy = 0) {
+  const b = worldToScreen(0, CAN_Z, 0), h = CAN_W * 1.24;
+  if (IMG.can.complete) ctx.drawImage(IMG.can, b.x - CAN_W / 2, b.y - h * (120 / 124) + dy, CAN_W, h);
+  ctx.fillStyle = COL.shadow; ctx.beginPath(); ctx.ellipse(b.x, b.y + 2, CAN_W * 0.42, 4, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---- low-poly crumpled ball (same scheme as crushing_01_ball.svg) ----
+function makeBall(seed) {
+  let s = seed; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const n = 11, outer = [], inner = [];
+  for (let i = 0; i < n; i++) {
+    const a = i / n * Math.PI * 2 + (rnd() - 0.5) * 0.24; outer.push([Math.cos(a) * (0.82 + rnd() * 0.26), Math.sin(a) * (0.82 + rnd() * 0.26)]);
+    const b = (i + 0.5) / n * Math.PI * 2, r = 0.5 * (0.7 + rnd() * 0.5); inner.push([Math.cos(b) * r - 0.08, Math.sin(b) * r - 0.1]);
+  }
+  const tris = [];
+  for (let i = 0; i < n; i++) {
+    const a = outer[i], b = outer[(i + 1) % n], m = inner[i], m0 = inner[(i - 1 + n) % n];
+    tris.push([a, b, m], [a, m, m0], [m0, m, [-0.12, -0.15]]);
+  }
+  tris.forEach(t => t.j = (rnd() - 0.5) * 2.4);
+  return { outer, tris };
+}
+var SHADE_OFF = 0;
+const SHADES = ['#f3f3f0', '#e8e8e4', '#dcdbd6', '#cfcec9', '#c2c1bc', '#b3b2ad', '#a3a29d'];
+function triShade(t, rot) {
+  const mx = (t[0][0] + t[1][0] + t[2][0]) / 3, my = (t[0][1] + t[1][1] + t[2][1]) / 3;
+  const c = Math.cos(rot), s = Math.sin(rot), x = mx * c - my * s, y = mx * s + my * c;
+  return SHADES[Math.max(0, Math.min(6, Math.round(3 + (x + y) * 2.2 + t.j + SHADE_OFF)))];
+}
+function drawBall(ball, cx, cy, r, rot = 0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(cx, cy); ctx.rotate(rot);
+  for (const t of ball.tris) {
+    ctx.fillStyle = triShade(t, rot);
+    ctx.beginPath(); ctx.moveTo(t[0][0] * r, t[0][1] * r); ctx.lineTo(t[1][0] * r, t[1][1] * r); ctx.lineTo(t[2][0] * r, t[2][1] * r); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 0.6; ctx.stroke();   // hide hairline seams
+  }
+  ctx.restore();
+}
+
+// ---- mouse cue: a soft ghost cursor (filled, no outlines) ----
+function ghostCursor(x, y, alpha, pressed = 0) {
+  if (alpha <= 0.01) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  if (pressed > 0) { ctx.fillStyle = `rgba(43,43,42,${0.18 * pressed})`; ctx.beginPath(); ctx.arc(x, y, 10 + 8 * (1 - pressed), 0, Math.PI * 2); ctx.fill(); }
+  ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(43,43,42,0.55)';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 17); ctx.lineTo(4.5, 13); ctx.lineTo(7.5, 19.5); ctx.lineTo(10, 18.4); ctx.lineTo(7, 12); ctx.lineTo(12.5, 12); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function softRipple(list, t) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i], age = t - p.t; if (age > 0.5) { list.splice(i, 1); continue; }
+    ctx.fillStyle = `rgba(43,43,42,${(1 - age / 0.5) * 0.12})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 6 + age * 50, 0, Math.PI * 2); ctx.fill();
+  }
+}
+const easeIO = x => x < 0 ? 0 : x > 1 ? 1 : x * x * (3 - 2 * x);
+
+// ---- noise sounds ----
+let NOISE = null;
+function noiseBuf() {
+  const a = audio(); if (!a) return null;
+  if (!NOISE) { NOISE = a.createBuffer(1, a.sampleRate, a.sampleRate); const d = NOISE.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  return NOISE;
+}
+function burst({ dur = 0.05, freq = 3000, q = 1, vol = 0.2, delay = 0, type = 'bandpass', attack = 0.002 } = {}) {
+  const a = audio(), buf = noiseBuf(); if (!a || !buf) return;
+  const t = a.currentTime + delay, s = a.createBufferSource(); s.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+  const g = a.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.02);
+}
+function rustle(k = 1) { for (let i = 0; i < 1 + Math.floor(Math.random() * 3 * k); i++) burst({ dur: 0.03 + Math.random() * 0.05, freq: 1500 + Math.random() * 4000, q: 1.5 + Math.random() * 3, vol: 0.06 * k, delay: i * 0.015 }); }
+function thud(vol = 0.3, freq = 90) {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime, o = a.createOscillator(), g = a.createGain();
+  o.frequency.setValueAtTime(freq * 1.8, t); o.frequency.exponentialRampToValueAtTime(freq, t + 0.1);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.35);
+}
+function makeNoiseVoice(type = 'bandpass') {
+  const a = audio(), buf = noiseBuf(); if (!a || !buf) return null;
+  const s = a.createBufferSource(); s.buffer = buf; s.loop = true;
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = 600; f.Q.value = 0.8;
+  const g = a.createGain(); g.gain.value = 0.0001; s.connect(f); f.connect(g); g.connect(master); s.start();
+  return { set(fr, v, q) { const t = a.currentTime; f.frequency.setTargetAtTime(fr, t, 0.05); g.gain.setTargetAtTime(Math.max(v, 0.0001), t, 0.06); if (q) f.Q.setTargetAtTime(q, t, 0.05); },
+           off() { g.gain.setTargetAtTime(0.0001, a.currentTime, 0.1); } };
+}
+// mouse only: these studies read hover + press, so ignore touch
+const isMouse = e => e.pointerType === 'mouse' || e.pointerType === 'pen';
+
+</script>
+<script>
+// STUDY 1 — PICK UP · DRAFTY  (asset: drafty_01_curl.svg)
+// A sheet lies face down on a plain grid. Every 1.5 s a draft lifts the upwind edge and curls it back, showing red
+// lines of text on the other side. Hovering takes over from the wind: the bottom edge lifts off the floor, still face
+// down, and holds (cursor = open hand). Press and drag up to peel the whole sheet off the floor.
+const PW = 230, PH = 300, K = 1 / 650, HL = 150, PERIOD = 1.5;
+let UNDER = null;
+function buildUnder() {
+  if (UNDER) return;
+  UNDER = document.createElement('canvas'); UNDER.width = PW * 2; UNDER.height = PH * 2;
+  const g = UNDER.getContext('2d'); g.scale(2, 2);
+  g.fillStyle = '#f2f1ed'; g.fillRect(0, 0, PW, PH);
+  // representational text: red "words" in lines that run edge to edge, a heavy headline first
+  g.fillStyle = '#c23b2e';
+  let s = 5; const r = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const line = (y, hgt, end) => { let x = 16; while (x < end) { const w = Math.min(end - x, 14 + r() * 44); g.fillRect(x, y, w, hgt); x += w + 5 + r() * 3; } };
+  line(20, 12, PW - 16); line(PH - 32, 12, PW - 16);
+  g.globalAlpha = 0.8;
+  for (let y = 48; y < PH - 44; y += 12) line(y, 4, PW - 16 - (r() < 0.25 ? r() * 90 : 0));
+}
+let S;
+function resetStudy() {
+  if (S && S.wind) S.wind.off();
+  S = { state: 'floor', edge: 'bottom', d: 0, R: 20, u: 0, mouse: null, grabY: 0, dGrab: 0, d0: 0,
+        gustStart: now() + 0.4, windFrom: 'bottom', gust: 0, streaks: [], ripples: [], wind: S && S.wind, peel: S && S.peel };
+  cvs.style.cursor = 'default';
+}
+window.resetStudy = resetStudy; resetStudy();
+const origin = () => ({ x: W / 2 - PW / 2, y: H * 0.5 - PH / 2 });
+function overPaper(p) { const o = origin(); return p && p.x > o.x - 10 && p.x < o.x + PW + 10 && p.y > o.y - 20 && p.y < o.y + PH + 30; }
+
+cvs.addEventListener('pointermove', e => {
+  if (!isMouse(e)) return; S.mouse = pos(e);
+  if (S.state === 'drag') S.dGrab = clamp(S.grabY - S.mouse.y, 0, 999);
+});
+cvs.addEventListener('pointerleave', () => { S.mouse = null; });
+cvs.addEventListener('pointerdown', e => {
+  if (!isMouse(e)) return; audio();
+  if (!S.wind) { S.wind = makeNoiseVoice('lowpass'); S.peel = makeNoiseVoice('bandpass'); }
+  const p = pos(e);
+  if (S.state !== 'floor') return;
+  if (overPaper(p)) { cvs.setPointerCapture(e.pointerId); S.state = 'drag'; S.grabY = p.y; S.dGrab = 0; S.d0 = S.edge === 'bottom' ? S.d : 0; rustle(0.5); }
+  else S.ripples.push({ x: p.x, y: p.y, t: now() });
+});
+cvs.addEventListener('pointerup', () => {
+  if (S.state !== 'drag') return;
+  if (S.d > PH * 0.8) S.state = 'finishing';
+  else { S.state = 'floor'; burst({ dur: 0.16, freq: 500, q: 0.6, vol: 0.08, attack: 0.01 }); }
+});
+
+const SIDES = ['bottom'];   // the draft only comes from the bottom
+let lastT = now();
+function frame() {
+  const t = now(), dt = 1 / 60, fdt = Math.min(0.1, t - lastT); lastT = t;
+  const kk = k0 => 1 - Math.pow(1 - k0, fdt * 60);      // frame-rate independent easing
+  buildUnder();
+  // ---- draft: one gust every PERIOD seconds, from a random side; the upwind edge lifts ----
+  if (t - S.gustStart > PERIOD) { S.gustStart += PERIOD; if (t - S.gustStart > PERIOD) S.gustStart = t; S.windFrom = SIDES[Math.floor(Math.random() * SIDES.length)]; }
+  const ga = t - S.gustStart;      // rise 0.3s, hold 0.5s, fall 0.3s, rest
+  S.gust = ga < 0 ? 0 : ga < 0.3 ? easeIO(ga / 0.3) : ga < 0.8 ? 1 : ga < 1.1 ? 1 - easeIO((ga - 0.8) / 0.3) : 0;
+  if (S.wind) S.wind.set(250 + S.gust * 600, 0.012 + S.gust * 0.06, 0.6);
+  if (S.gust > 0.15 && Math.random() < 0.35) {
+    const o = origin(), dir = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[S.windFrom];
+    const across = dir[0] ? o.y + Math.random() * PH : o.x + Math.random() * PW;
+    S.streaks.push({ dir, across, along: 0, len: 60 + Math.random() * 100, v: 420 + Math.random() * 220, bend: (Math.random() - 0.5) * 24, t });
+  }
+
+  const hov = S.state === 'floor' && overPaper(S.mouse);
+  if (S.mouse) cvs.style.cursor = S.state === 'drag' ? 'grabbing' : hov ? 'grab' : 'default';
+
+  // ---- targets ----
+  let dT, RT, edgeWanted = S.edge;
+  if (S.state === 'drag') {
+    edgeWanted = 'bottom';
+    dT = clamp(S.d0 + S.dGrab * 1.25, 0, PH); RT = Math.max(40, dT / 1.15);
+    if (S.peel) S.peel.set(900 + Math.abs(dT - S.d) * 200, Math.min(0.08, Math.abs(dT - S.d) * 0.02), 1.2);
+    if (dT >= PH - 0.5 && S.edge === 'bottom') S.state = 'finishing';
+  } else if (S.state === 'finishing' || S.state === 'held') {
+    dT = PH; RT = PH / 1.15; if (S.peel) S.peel.off();
+    if (S.d > PH - 2 && S.state === 'finishing') { S.u = Math.min(1, S.u + dt / 0.8); if (S.u === 1) { S.state = 'held'; tone(523, 1.6, 0.05); burst({ dur: 0.5, freq: 1500, q: 0.5, vol: 0.05, attack: 0.1 }); } }
+  } else if (hov) {
+    edgeWanted = 'bottom'; dT = 80 + Math.sin(t * 2) * 2; RT = dT / 1.1;       // lifts off the floor, still face down
+    if (S.peel) S.peel.off();
+  } else {
+    edgeWanted = S.windFrom;
+    const L = edgeWanted === 'left' || edgeWanted === 'right' ? PW : PH;
+    dT = 4 + S.gust * L * 0.36 + Math.sin(t * 15) * 5 * S.gust; RT = 13 + S.gust * 6;   // curls back past vertical
+    if (S.peel) S.peel.off();
+  }
+  let k = S.state === 'drag' ? 0.3 : !hov && S.state === 'floor' ? (dT > S.d ? 0.24 : 0.2) : 0.1;
+  if (edgeWanted !== S.edge) { dT = 0; k = 0.45; if (S.d < 3) { S.edge = edgeWanted; S.d = 0; } }   // old edge drops quickly, new one rises
+  S.d = lerp(S.d, dT, kk(k)); S.R = lerp(S.R, RT, kk(k));
+
+  // ---- draw ----
+  ctx.fillStyle = '#d4d3cf'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#c6c5c0'; ctx.lineWidth = 1;
+  for (let x = (W / 2) % 40; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke(); }
+  for (let y = (H / 2) % 40; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke(); }
+  S.streaks = S.streaks.filter(s => t - s.t < 1.6);
+  for (const s of S.streaks) {
+    s.along += s.v * dt; const a = Math.min(1, (t - s.t) * 3) * (1 - (t - s.t) / 1.6) * 0.85;
+    const [dx, dy] = s.dir, sg = dx || dy;
+    const start = sg > 0 ? -60 : (dx ? W : H) + 60;
+    const head = start + sg * s.along, tail = head - sg * s.len;
+    const P = v => dx ? [v, s.across] : [s.across, v];
+    const g = ctx.createLinearGradient(...P(tail), ...P(head)); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, `rgba(255,255,255,${a})`);
+    ctx.strokeStyle = g; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+    const m = P((head + tail) / 2), bend = dx ? [0, s.bend] : [s.bend, 0];
+    ctx.beginPath(); ctx.moveTo(...P(tail)); ctx.quadraticCurveTo(m[0] + bend[0], m[1] + bend[1], ...P(head)); ctx.stroke();
+  }
+  drawSheet();
+  softRipple(S.ripples, t);
+  requestAnimationFrame(frame);
+}
+
+// ---- the sheet: flat part + lifted part drawn as thin strips on a cylinder, any of the four edges ----
+const LX = -0.3, LY = -0.5, LZ = 0.81;
+function drawSheet() {
+  const o = origin(), cx = o.x + PW / 2, cy = o.y + PH / 2;
+  const e = S.edge, horiz = e === 'left' || e === 'right', L = horiz ? PW : PH;
+  const d = S.d, u = S.u, R = S.R / Math.max(0.0001, 1 - u), yf = L - d;
+  const far = e === 'bottom' || e === 'right';
+  const toS = q => far ? q : L - q;     // peel coord -> sheet coord along the axis
+  const strips = [];
+  const n = Math.max(2, Math.ceil(d / 1.5));
+  for (let i = 0; i <= n; i++) {
+    const s = d * i / n, th = s / R;
+    let p, h;
+    if (th <= Math.PI) { p = yf + R * Math.sin(th); h = R * (1 - Math.cos(th)); } else { p = yf - (s - Math.PI * R); h = 2 * R; }
+    h += u * HL;
+    strips.push({ q: toS(p), h, th, src: toS(yf + s) });
+  }
+  const rectAt = (q0, q1, h) => {
+    const sc = 1 + h * K;
+    if (!horiz) { const y0 = cy + (o.y + q0 - cy) * sc, y1 = cy + (o.y + q1 - cy) * sc; return [cx - PW / 2 * sc, Math.min(y0, y1), PW * sc, Math.abs(y1 - y0) + 0.9]; }
+    const x0 = cx + (o.x + q0 - cx) * sc, x1 = cx + (o.x + q1 - cx) * sc; return [Math.min(x0, x1), cy - PH / 2 * sc, Math.abs(x1 - x0) + 0.9, PH * sc];
+  };
+  // shadow under the lifted part (stronger), cast down and to the right
+  if (d > 1) {
+    ctx.save(); ctx.filter = `blur(${5 + u * 10}px)`; ctx.fillStyle = `rgba(30,28,25,${0.36 - u * 0.1})`;
+    for (let i = 0; i < strips.length - 1; i += 2) {
+      const a = strips[i], b = strips[Math.min(i + 2, strips.length - 1)], h = (a.h + b.h) / 2;
+      const ox = h * 0.22 + 2, oy = h * 0.4 + 3;
+      if (!horiz) ctx.fillRect(o.x + ox - h * 0.04, o.y + Math.min(a.q, b.q) + oy, PW + h * 0.08, Math.abs(b.q - a.q) + 2);
+      else ctx.fillRect(o.x + Math.min(a.q, b.q) + ox, o.y + oy - h * 0.04, Math.abs(b.q - a.q) + 2, PH + h * 0.08);
+    }
+    ctx.restore();
+  }
+  // flat part with a contact shadow
+  if (yf > 0 && u < 1) {
+    const q0 = far ? 0 : L - yf;
+    ctx.save(); ctx.filter = 'blur(2px)'; ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    if (!horiz) ctx.fillRect(o.x + 2, o.y + q0 + 3, PW, yf); else ctx.fillRect(o.x + q0 + 2, o.y + 3, yf, PH);
+    ctx.restore();
+    ctx.fillStyle = '#f2f1ed';
+    if (!horiz) ctx.fillRect(o.x, o.y + q0, PW, yf); else ctx.fillRect(o.x + q0, o.y, yf, PH);
+  }
+  // lifted strips, in order so the higher ones land on top
+  const sgn = far ? 1 : -1;
+  for (let i = 0; i < strips.length - 1; i++) {
+    const a = strips[i], b = strips[i + 1], h = (a.h + b.h) / 2, th = (a.th + b.th) / 2;
+    const r = rectAt(a.q, b.q, h);
+    let nAx = -Math.sin(th) * sgn, nz = Math.cos(th);
+    const under = th > Math.PI / 2; if (under) { nAx = -nAx; nz = -nz; }
+    const lit = horiz ? nAx * LX + nz * LZ : nAx * LY + nz * LZ;
+    if (under && UNDER) {
+      const s0 = Math.min(a.src, b.src), sl = Math.max(1, Math.abs(b.src - a.src) * 2);
+      if (!horiz) ctx.drawImage(UNDER, 0, s0 * 2, PW * 2, sl, ...r); else ctx.drawImage(UNDER, s0 * 2, 0, sl, PH * 2, ...r);
+    } else { ctx.fillStyle = '#f2f1ed'; ctx.fillRect(...r); }
+    const dl = Math.max(0, lit) - LZ;
+    ctx.fillStyle = dl < 0 ? `rgba(30,28,25,${-dl * 0.26})` : `rgba(255,255,255,${dl * 0.6})`; ctx.fillRect(...r);
+  }
+}
+requestAnimationFrame(frame);
+
+</script>
+
+</body></html>

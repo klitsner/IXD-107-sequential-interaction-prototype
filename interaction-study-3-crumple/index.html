@@ -1,0 +1,370 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Interaction Study 3 Crumple</title>
+<style>
+:root { --bg:#b9b8b3; --stage:#d6d5d1; --fg:#2b2b2a; --dim:#7a7975; color-scheme: light; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); margin: 0; overflow: hidden;
+  font: 12px/1.3 ui-monospace, "SF Mono", Menlo, monospace; }
+.stage { position: relative; height: 100%; max-width: 430px; max-height: 932px; margin: 0 auto; background: var(--stage);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+@media (min-width: 600px) { body { display: grid; place-items: center; }
+  .stage { width: 390px; height: min(844px, 100%); border-radius: 28px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.15); } }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.tag { position: absolute; left: 16px; top: 14px; color: var(--dim); letter-spacing: .06em; text-transform: uppercase; font-size: 10px; pointer-events: none; }
+#reset { position: absolute; right: 12px; top: 8px; width: 36px; height: 36px; border-radius: 50%; border: 0; background: rgba(0,0,0,0.06);
+  background: transparent; color: var(--dim); font-size: 18px; line-height: 1; cursor: pointer; }
+#reset:focus-visible { outline: 2px solid #aaa; }
+#hint { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; color: var(--dim); font-size: 10px; pointer-events: none; }
+</style>
+<div class="stage">
+  <canvas id="c"></canvas>
+  <div class="tag">Study 3 · crumple · crushing</div>
+  <button id="reset" aria-label="Reset">↺</button>
+  <div id="hint" hidden></div>
+</div>
+<script>
+// ---- shared stage, thread geometry, audio, cue helpers ----
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W = 390, H = 844, DPR = 1;
+function resize() {
+  const r = cvs.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = r.width; H = r.height;
+  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const N = 14;                       // number of threads
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const now = () => performance.now() / 1000;
+
+// y offset of thread i at normalized position u (0 = left anchor, 1 = right end)
+// spread: 1 = full fan, 0 = gathered into one line
+function threadY(i, u, spread, bulge) {
+  const k = (i - (N - 1) / 2) / ((N - 1) / 2);   // -1..1
+  const cy = H * 0.5;
+  const edge = 9;                                // thread spacing at the ends
+  const mid = H * 0.17 * bulge;                  // extra spacing in the middle
+  return cy + k * spread * (edge + mid * Math.sin(Math.PI * u));
+}
+
+// ---- audio ----
+let AC = null, master = null;
+function audio() {
+  if (!AC) {
+    try {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain(); master.gain.value = 0.55;
+      const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
+      master.connect(lp); lp.connect(AC.destination);
+    } catch (e) { AC = null; }
+  }
+  if (AC && AC.state === 'suspended') AC.resume();
+  return AC;
+}
+// soft, slow-attack tone (silky: no hard transient)
+function tone(freq, dur = 1.6, vol = 0.18, delay = 0, type = 'sine') {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime + delay;
+  const o = a.createOscillator(), g = a.createGain();
+  const o2 = a.createOscillator();              // slight detune for sheen
+  o.type = type; o2.type = 'sine';
+  o.frequency.value = freq; o2.frequency.value = freq * 1.003;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.06);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); o2.connect(g); g.connect(master);
+  o.start(t); o2.start(t); o.stop(t + dur + 0.05); o2.stop(t + dur + 0.05);
+}
+const SCALE = [261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3, 784.0, 880.0, 1046.5, 1174.7, 1318.5, 1568.0];
+
+// continuous voice (for stretching / gathering)
+function makeVoice(type = 'triangle') {
+  const a = audio(); if (!a) return null;
+  const o = a.createOscillator(), g = a.createGain(), f = a.createBiquadFilter();
+  o.type = type; f.type = 'lowpass'; f.frequency.value = 900; f.Q.value = 4;
+  g.gain.value = 0.0001;
+  o.connect(f); f.connect(g); g.connect(master); o.start();
+  return {
+    set(freq, vol, cutoff) {
+      const t = a.currentTime;
+      o.frequency.setTargetAtTime(freq, t, 0.05);
+      g.gain.setTargetAtTime(Math.max(vol, 0.0001), t, 0.08);
+      if (cutoff) f.frequency.setTargetAtTime(cutoff, t, 0.08);
+    },
+    off() { g.gain.setTargetAtTime(0.0001, a.currentTime, 0.15); }
+  };
+}
+
+// ---- cue helpers ----
+// ghost fingertip: soft ring + trail
+function ghost(x, y, alpha, r = 18) {
+  if (alpha <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(232,232,232,0.18)';
+  ctx.beginPath(); ctx.arc(x, y, r - 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function touchRipple(list, t) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i], age = t - p.t;
+    if (age > 0.6) { list.splice(i, 1); continue; }
+    ctx.save();
+    ctx.globalAlpha = (1 - age / 0.6) * 0.5;
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 10 + age * 60, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---- pointer helpers ----
+function pos(e) {
+  const r = cvs.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+// reset button
+document.getElementById('reset').addEventListener('click', () => { if (window.resetStudy) window.resetStudy(); });
+
+const ASSETS={"can": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 124\" width=\"100\" height=\"124\"><polygon points=\"4.0,16.0 10.2,20.5 18.8,118.5 14.0,115.0\" fill=\"#53524f\"/><polygon points=\"10.2,20.5 27.0,23.8 32.0,121.1 18.8,118.5\" fill=\"#61605d\"/><polygon points=\"27.0,23.8 50.0,25.0 50.0,122.0 32.0,121.1\" fill=\"#7f7e7a\"/><polygon points=\"50.0,25.0 73.0,23.8 68.0,121.1 50.0,122.0\" fill=\"#8f8e8a\"/><polygon points=\"73.0,23.8 89.8,20.5 81.2,118.5 68.0,121.1\" fill=\"#7f7e7a\"/><polygon points=\"89.8,20.5 96.0,16.0 86.0,115.0 81.2,118.5\" fill=\"#706f6b\"/><polygon points=\"96.0,16.0 92.5,19.4 82.5,22.4 67.6,24.3 50.0,25.0 32.4,24.3 17.5,22.4 7.5,19.4 4.0,16.0 7.5,12.6 17.5,9.6 32.4,7.7 50.0,7.0 67.6,7.7 82.5,9.6 92.5,12.6\" fill=\"#8f8e8a\"/><polygon points=\"90.0,16.0 87.0,18.7 78.3,21.0 65.3,22.5 50.0,23.0 34.7,22.5 21.7,21.0 13.0,18.7 10.0,16.0 13.0,13.3 21.7,11.0 34.7,9.5 50.0,9.0 65.3,9.5 78.3,11.0 87.0,13.3\" fill=\"#3a3937\"/><polygon points=\"96.0,16.0 92.5,19.4 82.5,22.4 67.6,24.3 50.0,25.0 32.4,24.3 17.5,22.4 7.5,19.4 4.0,16.0 4.0,13.5 7.5,16.9 17.5,19.9 32.4,21.8 50.0,22.5 67.6,21.8 82.5,19.9 92.5,16.9 96.0,13.5\" fill=\"#9c9b97\"/></svg>", "front": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><polygon points=\"0.0,0.0 230.0,0.0 128.8,132.0\" fill=\"#f6f6f3\"/><polygon points=\"230.0,0.0 230.0,300.0 128.8,132.0\" fill=\"#eeeeea\"/><polygon points=\"230.0,300.0 0.0,300.0 128.8,132.0\" fill=\"#e6e6e1\"/><polygon points=\"0.0,300.0 0.0,0.0 128.8,132.0\" fill=\"#dddcd7\"/><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">New balance</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></svg>", "back": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><polygon points=\"0.0,0.0 230.0,0.0 128.8,132.0\" fill=\"#f6f6f3\"/><polygon points=\"230.0,0.0 230.0,300.0 128.8,132.0\" fill=\"#eeeeea\"/><polygon points=\"230.0,300.0 0.0,300.0 128.8,132.0\" fill=\"#e6e6e1\"/><polygon points=\"0.0,300.0 0.0,0.0 128.8,132.0\" fill=\"#dddcd7\"/><g transform=\"translate(230 0) scale(-1 1)\" opacity=\"0.05\"><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">New balance</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></g></svg>", "front_plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 230 300\" width=\"230\" height=\"300\"><rect width=\"230\" height=\"300\" fill=\"#f4f3ef\"/><text x=\"18\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b2b2a\" text-anchor=\"start\" letter-spacing=\"1.6\">STATEMENT</text><text x=\"212\" y=\"30\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"end\" letter-spacing=\"0\">Card ending 4417</text><rect x=\"18\" y=\"40\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><text x=\"18\" y=\"64\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"9\" font-weight=\"700\" fill=\"#c23b2e\" text-anchor=\"start\" letter-spacing=\"1.2\">PAYMENT OVERDUE</text><text x=\"18\" y=\"98\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"30\" font-weight=\"700\" fill=\"#c23b2e\" text-anchor=\"start\" letter-spacing=\"0\">$12,024.00</text><text x=\"18\" y=\"120\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Minimum payment due  $361.00</text><text x=\"18\" y=\"133\" font-family=\"Helvetica, Arial, sans-serif\" font-size=\"8.5\" font-weight=\"400\" fill=\"#7a7975\" text-anchor=\"start\" letter-spacing=\"0\">Payment due date  Nov 1</text><rect x=\"18\" y=\"148\" width=\"194\" height=\"1.2\" fill=\"#b9b8b3\"/><rect x=\"18\" y=\"164\" width=\"80\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"180\" y=\"164\" width=\"34\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"179\" width=\"101\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"179\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"194\" width=\"112\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"181\" y=\"194\" width=\"33\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"209\" width=\"97\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"209\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"224\" width=\"73\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"224\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"239\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"171\" y=\"239\" width=\"29\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"254\" width=\"75\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"182\" y=\"254\" width=\"36\" height=\"5\" fill=\"#bdbcb7\"/><rect x=\"18\" y=\"269\" width=\"87\" height=\"5\" fill=\"#cfcec9\"/><rect x=\"183\" y=\"269\" width=\"37\" height=\"5\" fill=\"#bdbcb7\"/></svg>"};
+// ---- shared for the statement studies: light low-poly scene, assets, mouse cues, sounds ----
+const COL = { wall: '#d6d5d1', floor: '#c4c3be', ink: '#2b2b2a', under: '#b9b8b3', shadow: 'rgba(0,0,0,0.10)' };
+const IMG = {};
+for (const k in ASSETS) { const im = new Image(); im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ASSETS[k]); IMG[k] = im; }
+
+const HORIZON = () => H * 0.34;
+function groundY(z) { return lerp(H * 0.9, H * 0.4, z); }
+function zScale(z) { return lerp(1, 0.32, z); }
+function worldToScreen(x, z, h) { const s = zScale(z); return { x: W / 2 + x * W * 0.9 * s, y: groundY(z) - h * H * 0.45 * s, s }; }
+
+let brighten = 0;      // used by the throw study
+function drawRoom() {
+  ctx.fillStyle = COL.wall; ctx.fillRect(0, 0, W, H);
+  // floor: two flat facets + board seams in the wall colour
+  ctx.fillStyle = COL.floor;
+  ctx.beginPath(); ctx.moveTo(0, HORIZON()); ctx.lineTo(W, HORIZON()); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.035)';
+  ctx.beginPath(); ctx.moveTo(W / 2, HORIZON()); ctx.lineTo(W, HORIZON()); ctx.lineTo(W, H); ctx.fill();
+  ctx.strokeStyle = COL.wall; ctx.lineWidth = 1.2;
+  const vx = W / 2, vy = HORIZON() - H * 0.3;
+  for (let i = -7; i <= 7; i++) {
+    const bx = W / 2 + i * W * 0.2, t = (HORIZON() - vy) / (H - vy);
+    ctx.beginPath(); ctx.moveTo(lerp(vx, bx, t), HORIZON()); ctx.lineTo(bx, H); ctx.stroke();
+  }
+  if (brighten > 0.001) { ctx.fillStyle = `rgba(255,255,255,${brighten})`; ctx.fillRect(0, 0, W, H); }
+}
+
+const CAN_Z = 1.0, CAN_W = 58, CAN_R = 0.075;
+function canH() { return CAN_W / (H * 0.45 * zScale(CAN_Z)); }       // rim height in world units, matched to the drawing
+function drawCan(dy = 0) {
+  const b = worldToScreen(0, CAN_Z, 0), h = CAN_W * 1.24;
+  if (IMG.can.complete) ctx.drawImage(IMG.can, b.x - CAN_W / 2, b.y - h * (120 / 124) + dy, CAN_W, h);
+  ctx.fillStyle = COL.shadow; ctx.beginPath(); ctx.ellipse(b.x, b.y + 2, CAN_W * 0.42, 4, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---- low-poly crumpled ball (same scheme as crushing_01_ball.svg) ----
+function makeBall(seed) {
+  let s = seed; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const n = 11, outer = [], inner = [];
+  for (let i = 0; i < n; i++) {
+    const a = i / n * Math.PI * 2 + (rnd() - 0.5) * 0.24; outer.push([Math.cos(a) * (0.82 + rnd() * 0.26), Math.sin(a) * (0.82 + rnd() * 0.26)]);
+    const b = (i + 0.5) / n * Math.PI * 2, r = 0.5 * (0.7 + rnd() * 0.5); inner.push([Math.cos(b) * r - 0.08, Math.sin(b) * r - 0.1]);
+  }
+  const tris = [];
+  for (let i = 0; i < n; i++) {
+    const a = outer[i], b = outer[(i + 1) % n], m = inner[i], m0 = inner[(i - 1 + n) % n];
+    tris.push([a, b, m], [a, m, m0], [m0, m, [-0.12, -0.15]]);
+  }
+  tris.forEach(t => t.j = (rnd() - 0.5) * 2.4);
+  return { outer, tris };
+}
+var SHADE_OFF = 0;
+const SHADES = ['#f3f3f0', '#e8e8e4', '#dcdbd6', '#cfcec9', '#c2c1bc', '#b3b2ad', '#a3a29d'];
+function triShade(t, rot) {
+  const mx = (t[0][0] + t[1][0] + t[2][0]) / 3, my = (t[0][1] + t[1][1] + t[2][1]) / 3;
+  const c = Math.cos(rot), s = Math.sin(rot), x = mx * c - my * s, y = mx * s + my * c;
+  return SHADES[Math.max(0, Math.min(6, Math.round(3 + (x + y) * 2.2 + t.j + SHADE_OFF)))];
+}
+function drawBall(ball, cx, cy, r, rot = 0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(cx, cy); ctx.rotate(rot);
+  for (const t of ball.tris) {
+    ctx.fillStyle = triShade(t, rot);
+    ctx.beginPath(); ctx.moveTo(t[0][0] * r, t[0][1] * r); ctx.lineTo(t[1][0] * r, t[1][1] * r); ctx.lineTo(t[2][0] * r, t[2][1] * r); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 0.6; ctx.stroke();   // hide hairline seams
+  }
+  ctx.restore();
+}
+
+// ---- mouse cue: a soft ghost cursor (filled, no outlines) ----
+function ghostCursor(x, y, alpha, pressed = 0) {
+  if (alpha <= 0.01) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  if (pressed > 0) { ctx.fillStyle = `rgba(43,43,42,${0.18 * pressed})`; ctx.beginPath(); ctx.arc(x, y, 10 + 8 * (1 - pressed), 0, Math.PI * 2); ctx.fill(); }
+  ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(43,43,42,0.55)';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 17); ctx.lineTo(4.5, 13); ctx.lineTo(7.5, 19.5); ctx.lineTo(10, 18.4); ctx.lineTo(7, 12); ctx.lineTo(12.5, 12); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function softRipple(list, t) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i], age = t - p.t; if (age > 0.5) { list.splice(i, 1); continue; }
+    ctx.fillStyle = `rgba(43,43,42,${(1 - age / 0.5) * 0.12})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 6 + age * 50, 0, Math.PI * 2); ctx.fill();
+  }
+}
+const easeIO = x => x < 0 ? 0 : x > 1 ? 1 : x * x * (3 - 2 * x);
+
+// ---- noise sounds ----
+let NOISE = null;
+function noiseBuf() {
+  const a = audio(); if (!a) return null;
+  if (!NOISE) { NOISE = a.createBuffer(1, a.sampleRate, a.sampleRate); const d = NOISE.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  return NOISE;
+}
+function burst({ dur = 0.05, freq = 3000, q = 1, vol = 0.2, delay = 0, type = 'bandpass', attack = 0.002 } = {}) {
+  const a = audio(), buf = noiseBuf(); if (!a || !buf) return;
+  const t = a.currentTime + delay, s = a.createBufferSource(); s.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+  const g = a.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.02);
+}
+function rustle(k = 1) { for (let i = 0; i < 1 + Math.floor(Math.random() * 3 * k); i++) burst({ dur: 0.03 + Math.random() * 0.05, freq: 1500 + Math.random() * 4000, q: 1.5 + Math.random() * 3, vol: 0.06 * k, delay: i * 0.015 }); }
+function thud(vol = 0.3, freq = 90) {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime, o = a.createOscillator(), g = a.createGain();
+  o.frequency.setValueAtTime(freq * 1.8, t); o.frequency.exponentialRampToValueAtTime(freq, t + 0.1);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.35);
+}
+function makeNoiseVoice(type = 'bandpass') {
+  const a = audio(), buf = noiseBuf(); if (!a || !buf) return null;
+  const s = a.createBufferSource(); s.buffer = buf; s.loop = true;
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = 600; f.Q.value = 0.8;
+  const g = a.createGain(); g.gain.value = 0.0001; s.connect(f); f.connect(g); g.connect(master); s.start();
+  return { set(fr, v, q) { const t = a.currentTime; f.frequency.setTargetAtTime(fr, t, 0.05); g.gain.setTargetAtTime(Math.max(v, 0.0001), t, 0.06); if (q) f.Q.setTargetAtTime(q, t, 0.05); },
+           off() { g.gain.setTargetAtTime(0.0001, a.currentTime, 0.1); } };
+}
+// mouse only: these studies read hover + press, so ignore touch
+const isMouse = e => e.pointerType === 'mouse' || e.pointerType === 'pen';
+
+</script>
+<script>
+// STUDY 3 — CRUMPLE · CRUSHING  (asset: crushing_01_ball.svg)
+// Plain ground, just the statement. Hover: two open white-glove hands fade in at its sides.
+// Press and hold: the hands close in, fingers curl, and they shake harder as the paper is crushed into a low-poly ball.
+const HW = 98, HH = 128, M = 22, BALL_R = 50;
+const BALL = makeBall(17);
+const RECT = [], TARGET = [];
+for (let i = 0; i < M; i++) {
+  const u = i / M * 4, side = Math.floor(u), f = u - side;
+  const p = side === 0 ? [-HW + 2 * HW * f, -HH] : side === 1 ? [HW, -HH + 2 * HH * f] : side === 2 ? [HW - 2 * HW * f, HH] : [-HW, HH - 2 * HH * f];
+  RECT.push(p);
+  const a = Math.atan2(p[1], p[0]);
+  let best = BALL.outer[0], bd = 9; BALL.outer.forEach(o => { const d = Math.abs(Math.atan2(o[1], o[0]) - a); const dd = Math.min(d, 2 * Math.PI - d); if (dd < bd) { bd = dd; best = o; } });
+  const r = Math.hypot(...best); TARGET.push([Math.cos(a) * r * BALL_R, Math.sin(a) * r * BALL_R]);
+}
+let S;
+function resetStudy() {
+  if (S && S.groan) S.groan.off();
+  S = { c: 0, L: 0, held: false, mouse: null, state: 'flat', shake: 0, handA: 0, close: 0, ripples: [], groan: S && S.groan, doneT: 0 };
+}
+window.resetStudy = resetStudy; resetStudy();
+const center = () => ({ x: W / 2, y: H * 0.47 });
+const halfW = k => lerp(HW, BALL_R, k);
+function overPaper(p) { const c = center(), k = easeIO(S.c); return p && Math.abs(p.x - c.x) < halfW(k) + 60 && Math.abs(p.y - c.y) < lerp(HH, BALL_R, k) + 30; }
+
+cvs.addEventListener('pointermove', e => { if (!isMouse(e)) return; S.mouse = pos(e); });
+cvs.addEventListener('pointerleave', () => { S.mouse = null; });
+cvs.addEventListener('pointerdown', e => {
+  if (!isMouse(e)) return; audio();
+  const p = pos(e);
+  if (S.state === 'ball') return;
+  if (overPaper(p)) {
+    cvs.setPointerCapture(e.pointerId); S.held = true; S.state = 'crush';
+    if (!S.groan) S.groan = makeVoice('sawtooth');
+    thud(0.1, 80); rustle(0.5);
+  } else S.ripples.push({ x: p.x, y: p.y, t: now() });
+});
+cvs.addEventListener('pointerup', () => {
+  if (!S.held) return; S.held = false;
+  if (S.groan) S.groan.off();
+  if (S.state !== 'ball') { S.L = S.c * 0.85; S.state = 'flat'; }
+});
+
+function frame() {
+  const t = now(), dt = 1 / 60;
+  const hov = S.mouse && overPaper(S.mouse);
+  if (S.mouse) cvs.style.cursor = S.state === 'ball' ? 'default' : hov || S.held ? 'none' : 'default';
+  S.handA = lerp(S.handA, (hov || S.held) && S.state !== 'ball' ? 1 : S.state === 'ball' ? 0 : 0, S.state === 'ball' ? 0.04 : 0.1);
+  if (S.held) {
+    S.close = lerp(S.close, 1, 0.2);
+    if (S.close > 0.8) {             // hands are on the paper: start crushing; slow at first, then it gives way
+      const rate = 0.16 + S.c * 0.75, prev = S.c;
+      S.c = Math.min(1, S.c + rate * dt);
+      S.shake = 0.6 + S.c * 7;
+      if (S.groan) S.groan.set(46 + (1 - S.c) * 20, 0.05 + S.c * 0.05, 180 + S.c * 300);
+      if (Math.random() < 0.18 + S.c * 0.5) burst({ dur: 0.05 + Math.random() * 0.06, freq: 300 + Math.random() * 1200, q: 1 + Math.random() * 2, vol: 0.08 + S.c * 0.12 });
+      if (S.c >= 1 && prev < 1) { thud(0.45, 55); burst({ dur: 0.25, freq: 600, q: 0.6, vol: 0.2 }); S.state = 'ball'; S.held = false; S.doneT = t; if (S.groan) S.groan.off(); }
+    }
+  } else {
+    S.close = lerp(S.close, 0, 0.08);
+    if (S.state === 'flat') S.c = lerp(S.c, S.L, 0.025);
+    S.shake *= 0.85;
+  }
+
+  ctx.fillStyle = '#e4e3df'; ctx.fillRect(0, 0, W, H);
+  const c0 = center(), k = easeIO(S.c);
+  const j = () => (Math.random() - 0.5) * S.shake;
+  const cx = c0.x + j(), cy = c0.y + j() + (S.state === 'ball' ? Math.abs(Math.sin((t - S.doneT) * 8)) * 10 * Math.exp(-(t - S.doneT) * 4) : 0);
+  const pts = RECT.map((p, i) => [cx + lerp(p[0], TARGET[i][0], k), cy + lerp(p[1], TARGET[i][1], k)]);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.08)'; ctx.beginPath(); ctx.ellipse(c0.x, c0.y + lerp(HH, BALL_R, k) + 26, lerp(HW, BALL_R, k), 8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.save();
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.closePath(); ctx.clip();
+  ctx.translate(cx, cy); const sc = 1 - k * 0.7; ctx.scale(sc, sc);
+  if (IMG.front.complete) ctx.drawImage(IMG.front, -HW, -HH, HW * 2, HH * 2);
+  ctx.restore();
+  if (k > 0.02) {
+    ctx.save(); ctx.globalAlpha = Math.min(1, k * 1.25);
+    for (let i = 0; i < M; i++) {
+      const a = pts[i], b = pts[(i + 1) % M];
+      const tt = [[(a[0] - cx) / BALL_R, (a[1] - cy) / BALL_R], [(b[0] - cx) / BALL_R, (b[1] - cy) / BALL_R], [-0.1, -0.12]]; tt.j = Math.sin(i * 12.9) * 1.6;
+      ctx.fillStyle = triShade(tt, 0);
+      ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(cx - 6 * k, cy - 8 * k); ctx.closePath(); ctx.fill(); ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 0.6; ctx.stroke();
+    }
+    ctx.restore();
+    if (k > 0.6) drawBall(BALL, cx, cy, BALL_R * lerp(1.4, 1, (k - 0.6) / 0.4), 0, (k - 0.6) / 0.4);
+  }
+
+  // hands: open and hovering a little outside the sheet; close in onto its edges; fingers curl as it is crushed
+  if (S.handA > 0.02) {
+    const edge = halfW(k), gap = lerp(20, 0, S.close), bob = Math.sin(t * 2.4) * 3 * (1 - S.close);
+    const curl = Math.min(1, S.close * 0.2 + S.c * 1.0);
+    glove(cx + edge + gap + j(), cy + bob + j(), 1, curl, S.handA);
+    glove(cx - edge - gap + j(), cy - bob + j(), -1, curl, S.handA);
+  }
+  softRipple(S.ripples, t);
+  requestAnimationFrame(frame);
+}
+
+// low-poly white glove drawn from 5 frames (glove_01..05.svg): open -> fist. side = 1 for the right hand (fingers point left).
+const GLOVES = ["<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-96 -60 176 124\" width=\"176\" height=\"124\"><g transform=\"translate(1.5 2.5)\" opacity=\"0.55\"><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.4,-27.2 16.1,-32.1 18.7,-20.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.4,-27.2 18.7,-20.4 -4.6,-14.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.2,-31.9 35.8,-35.5 38.0,-25.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.2,-31.9 38.0,-25.7 18.7,-20.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-14.4 20.5,-15.9 21.4,-3.9\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-14.4 21.4,-3.9 -5.6,-1.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.5,-15.7 42.5,-16.4 43.2,-6.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.5,-15.7 43.2,-6.4 21.3,-4.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.6,-1.4 20.4,0.8 19.5,12.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.6,-1.4 19.5,12.8 -6.4,11.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.3,1.0 41.2,3.3 40.5,13.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.3,1.0 40.5,13.3 19.5,12.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.7,10.7 14.8,15.1 12.4,26.9\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.7,10.7 12.4,26.9 -7.3,23.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.8,15.3 30.3,19.3 28.3,29.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.8,15.3 28.3,29.1 12.4,26.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.9,21.5 -9.5,37.2 -18.3,46.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.9,21.5 -18.3,46.8 -35.1,32.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.9,35.6 1.7,39.3 0.2,49.2\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.9,35.6 0.2,49.2 -14.9,48.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></g><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.4,-27.2 16.1,-32.1 18.7,-20.4\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.4,-27.2 18.7,-20.4 -4.6,-14.8\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.2,-31.9 35.8,-35.5 38.0,-25.7\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.2,-31.9 38.0,-25.7 18.7,-20.6\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-14.4 20.5,-15.9 21.4,-3.9\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-14.4 21.4,-3.9 -5.6,-1.6\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.5,-15.7 42.5,-16.4 43.2,-6.4\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.5,-15.7 43.2,-6.4 21.3,-4.1\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.6,-1.4 20.4,0.8 19.5,12.8\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.6,-1.4 19.5,12.8 -6.4,11.4\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.3,1.0 41.2,3.3 40.5,13.3\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"20.3,1.0 40.5,13.3 19.5,12.6\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.7,10.7 14.8,15.1 12.4,26.9\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.7,10.7 12.4,26.9 -7.3,23.3\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.8,15.3 30.3,19.3 28.3,29.1\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.8,15.3 28.3,29.1 12.4,26.7\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.9,21.5 -9.5,37.2 -18.3,46.8\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.9,21.5 -18.3,46.8 -35.1,32.5\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.9,35.6 1.7,39.3 0.2,49.2\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.9,35.6 0.2,49.2 -14.9,48.4\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-96 -60 176 124\" width=\"176\" height=\"124\"><g transform=\"translate(1.5 2.5)\" opacity=\"0.55\"><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.1,-27.3 13.3,-30.3 15.2,-18.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.1,-27.3 15.2,-18.5 -4.9,-14.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.4,-29.7 29.1,-23.7 25.3,-14.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.4,-29.7 25.3,-14.5 12.1,-19.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.3,-14.4 16.7,-15.2 17.4,-3.2\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.3,-14.4 17.4,-3.2 -5.7,-1.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.8,-14.3 33.0,-6.3 28.2,2.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.8,-14.3 28.2,2.5 14.3,-4.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,-1.4 16.5,0.2 15.9,12.2\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,-1.4 15.9,12.2 -6.3,11.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.5,1.4 31.1,10.4 25.5,18.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.5,1.4 25.5,18.6 12.9,10.9\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.0,10.7 11.8,13.6 10.0,25.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.0,10.7 10.0,25.5 -7.0,23.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.6,15.1 22.7,22.9 16.3,30.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.6,15.1 16.3,30.6 7.2,24.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.1,19.7 -8.0,25.9 -11.3,38.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.1,19.7 -11.3,38.5 -31.9,34.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.6,26.4 0.7,21.2 5.3,30.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.6,26.4 5.3,30.1 -6.7,38.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></g><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.1,-27.3 13.3,-30.3 15.2,-18.5\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-7.1,-27.3 15.2,-18.5 -4.9,-14.7\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.4,-29.7 29.1,-23.7 25.3,-14.5\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"16.4,-29.7 25.3,-14.5 12.1,-19.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.3,-14.4 16.7,-15.2 17.4,-3.2\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.3,-14.4 17.4,-3.2 -5.7,-1.6\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.8,-14.3 33.0,-6.3 28.2,2.5\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.8,-14.3 28.2,2.5 14.3,-4.1\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,-1.4 16.5,0.2 15.9,12.2\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,-1.4 15.9,12.2 -6.3,11.4\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.5,1.4 31.1,10.4 25.5,18.6\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"19.5,1.4 25.5,18.6 12.9,10.9\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.0,10.7 11.8,13.6 10.0,25.5\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.0,10.7 10.0,25.5 -7.0,23.3\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.6,15.1 22.7,22.9 16.3,30.6\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"14.6,15.1 16.3,30.6 7.2,24.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.1,19.7 -8.0,25.9 -11.3,38.5\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.1,19.7 -11.3,38.5 -31.9,34.3\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.6,26.4 0.7,21.2 5.3,30.1\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-12.6,26.4 5.3,30.1 -6.7,38.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-96 -60 176 124\" width=\"176\" height=\"124\"><g transform=\"translate(1.5 2.5)\" opacity=\"0.55\"><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.7,-27.4 10.3,-28.8 11.6,-16.9\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.7,-27.4 11.6,-16.9 -5.3,-14.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"15.8,-26.1 19.5,-18.9 11.1,-13.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"15.8,-26.1 11.1,-13.4 6.1,-19.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.2,-14.4 12.9,-14.7 13.4,-2.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.2,-14.4 13.4,-2.7 -5.8,-1.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"18.2,-11.5 21.8,-3.4 13.0,1.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"18.2,-11.5 13.0,1.4 8.1,-5.9\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.8,-1.4 12.7,-0.4 12.2,11.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.8,-1.4 12.2,11.6 -6.2,11.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"17.7,3.2 20.5,11.2 11.5,15.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"17.7,3.2 11.5,15.4 7.2,8.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.4,10.6 8.7,12.4 7.5,24.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.4,10.6 7.5,24.4 -6.6,23.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"13.5,16.3 15.1,22.6 5.8,26.2\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"13.5,16.3 5.8,26.2 2.7,20.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-31.9,19.7 -12.2,15.8 -9.0,28.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-31.9,19.7 -9.0,28.3 -28.1,34.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-16.4,19.1 -9.0,7.8 -0.0,12.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-16.4,19.1 -0.0,12.3 -4.8,25.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></g><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.7,-27.4 10.3,-28.8 11.6,-16.9\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.7,-27.4 11.6,-16.9 -5.3,-14.6\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"15.8,-26.1 19.5,-18.9 11.1,-13.4\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"15.8,-26.1 11.1,-13.4 6.1,-19.7\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.2,-14.4 12.9,-14.7 13.4,-2.7\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.2,-14.4 13.4,-2.7 -5.8,-1.6\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"18.2,-11.5 21.8,-3.4 13.0,1.4\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"18.2,-11.5 13.0,1.4 8.1,-5.9\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.8,-1.4 12.7,-0.4 12.2,11.6\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.8,-1.4 12.2,11.6 -6.2,11.4\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"17.7,3.2 20.5,11.2 11.5,15.4\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"17.7,3.2 11.5,15.4 7.2,8.1\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.4,10.6 8.7,12.4 7.5,24.4\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.4,10.6 7.5,24.4 -6.6,23.4\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"13.5,16.3 15.1,22.6 5.8,26.2\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"13.5,16.3 5.8,26.2 2.7,20.5\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-31.9,19.7 -12.2,15.8 -9.0,28.3\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-31.9,19.7 -9.0,28.3 -28.1,34.3\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-16.4,19.1 -9.0,7.8 -0.0,12.3\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-16.4,19.1 -0.0,12.3 -4.8,25.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-96 -60 176 124\" width=\"176\" height=\"124\"><g transform=\"translate(1.5 2.5)\" opacity=\"0.55\"><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.0,23.4 1.1,22.8 1.6,12.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.0,23.4 1.6,12.0 5.6,11.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"8.6,11.1 3.5,10.6 3.6,-0.2\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"8.6,11.1 3.6,-0.2 8.8,-0.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"9.4,-2.5 4.0,-2.8 3.8,-13.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"9.4,-2.5 3.8,-13.6 9.2,-14.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"7.9,-16.0 3.0,-16.1 2.4,-26.9\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"7.9,-16.0 2.4,-26.9 7.2,-27.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-27.4 7.2,-27.7 7.9,-15.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-27.4 7.9,-15.8 -5.6,-14.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.5,-27.7 11.5,-21.7 5.5,-15.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.1,-14.4 9.1,-14.3 9.4,-2.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.1,-14.4 9.4,-2.3 -5.9,-1.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"7.3,-14.3 13.3,-8.3 7.3,-2.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.9,-1.4 8.8,-0.7 8.6,11.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.9,-1.4 8.6,11.3 -6.1,11.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"6.7,-0.7 12.7,5.3 6.7,11.3\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,10.6 5.6,11.6 5.0,23.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,10.6 5.0,23.6 -6.3,23.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"3.3,11.6 9.3,17.6 3.3,23.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-35.1,21.5 -20.5,9.3 -11.7,18.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-35.1,21.5 -11.7,18.8 -24.9,32.5\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-22.5,15.0 -23.0,2.2 -13.1,0.7\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-22.5,15.0 -13.1,0.7 -9.7,13.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></g><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.0,23.4 1.1,22.8 1.6,12.0\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.0,23.4 1.6,12.0 5.6,11.8\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"8.6,11.1 3.5,10.6 3.6,-0.2\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"8.6,11.1 3.6,-0.2 8.8,-0.5\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"9.4,-2.5 4.0,-2.8 3.8,-13.6\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"9.4,-2.5 3.8,-13.6 9.2,-14.1\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"7.9,-16.0 3.0,-16.1 2.4,-26.9\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"7.9,-16.0 2.4,-26.9 7.2,-27.5\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-27.4 7.2,-27.7 7.9,-15.8\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.4,-27.4 7.9,-15.8 -5.6,-14.6\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.5,-27.7 11.5,-21.7 5.5,-15.7\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.1,-14.4 9.1,-14.3 9.4,-2.3\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.1,-14.4 9.4,-2.3 -5.9,-1.6\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"7.3,-14.3 13.3,-8.3 7.3,-2.3\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.9,-1.4 8.8,-0.7 8.6,11.3\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.9,-1.4 8.6,11.3 -6.1,11.4\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"6.7,-0.7 12.7,5.3 6.7,11.3\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,10.6 5.6,11.6 5.0,23.6\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-5.7,10.6 5.0,23.6 -6.3,23.4\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"3.3,11.6 9.3,17.6 3.3,23.6\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-35.1,21.5 -20.5,9.3 -11.7,18.8\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-35.1,21.5 -11.7,18.8 -24.9,32.5\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-22.5,15.0 -23.0,2.2 -13.1,0.7\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-22.5,15.0 -13.1,0.7 -9.7,13.1\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-96 -60 176 124\" width=\"176\" height=\"124\"><g transform=\"translate(1.5 2.5)\" opacity=\"0.55\"><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.4,22.8 -6.4,22.4 -6.4,11.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.4,22.8 -6.4,11.6 2.4,11.2\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.9,10.8 -6.6,10.4 -6.6,-0.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.9,10.8 -6.6,-0.4 4.9,-0.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.3,-2.2 -6.8,-2.6 -6.8,-13.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.3,-2.2 -6.8,-13.4 5.3,-13.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.1,-15.2 -6.9,-15.6 -6.9,-26.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.1,-15.2 -6.9,-26.4 4.1,-26.8\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-27.4 4.1,-27.0 4.1,-15.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-27.4 4.1,-15.0 -6.0,-14.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.1,-27.0 8.1,-21.0 2.1,-15.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-14.4 5.3,-14.0 5.3,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-14.4 5.3,-2.0 -6.0,-1.6\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"3.3,-14.0 9.3,-8.0 3.3,-2.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-1.4 4.9,-1.0 4.9,11.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-1.4 4.9,11.0 -6.0,11.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.9,-1.0 8.9,5.0 2.9,11.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,10.6 2.4,11.0 2.4,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,10.6 2.4,23.0 -6.0,23.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"0.4,11.0 6.4,17.0 0.4,23.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-37.1,24.6 -30.5,7.9 -18.2,12.0\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-37.1,24.6 -18.2,12.0 -22.9,29.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.9,14.5 -36.3,4.9 -29.2,-2.1\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.9,14.5 -29.2,-2.1 -19.7,5.4\" fill=\"#a9a8a3\" stroke=\"#a9a8a3\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></g><polygon points=\"-88.0,-24.0 -70.0,-28.0 -68.0,27.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-88.0,-24.0 -68.0,27.0 -88.0,23.0\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-70.0,-28.0 -30.0,-33.0 -40.0,-2.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-30.0,-33.0 -6.0,-24.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-24.0 -4.0,21.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-4.0,21.0 -24.0,31.0 -40.0,-2.0\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-24.0,31.0 -68.0,26.0 -40.0,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-68.0,26.0 -70.0,-28.0 -40.0,-2.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.4,22.8 -6.4,22.4 -6.4,11.6\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.4,22.8 -6.4,11.6 2.4,11.2\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.9,10.8 -6.6,10.4 -6.6,-0.4\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.9,10.8 -6.6,-0.4 4.9,-0.8\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.3,-2.2 -6.8,-2.6 -6.8,-13.4\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"5.3,-2.2 -6.8,-13.4 5.3,-13.8\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.1,-15.2 -6.9,-15.6 -6.9,-26.4\" fill=\"#c4c3be\" stroke=\"#c4c3be\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"4.1,-15.2 -6.9,-26.4 4.1,-26.8\" fill=\"#b0afaa\" stroke=\"#b0afaa\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-27.4 4.1,-27.0 4.1,-15.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-27.4 4.1,-15.0 -6.0,-14.6\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.1,-27.0 8.1,-21.0 2.1,-15.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-14.4 5.3,-14.0 5.3,-2.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-14.4 5.3,-2.0 -6.0,-1.6\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"3.3,-14.0 9.3,-8.0 3.3,-2.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-1.4 4.9,-1.0 4.9,11.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,-1.4 4.9,11.0 -6.0,11.4\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"2.9,-1.0 8.9,5.0 2.9,11.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,10.6 2.4,11.0 2.4,23.0\" fill=\"#ffffff\" stroke=\"#ffffff\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-6.0,10.6 2.4,23.0 -6.0,23.4\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"0.4,11.0 6.4,17.0 0.4,23.0\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-37.1,24.6 -30.5,7.9 -18.2,12.0\" fill=\"#f3f2ee\" stroke=\"#f3f2ee\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-37.1,24.6 -18.2,12.0 -22.9,29.4\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.9,14.5 -36.3,4.9 -29.2,-2.1\" fill=\"#e6e5e0\" stroke=\"#e6e5e0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/><polygon points=\"-28.9,14.5 -29.2,-2.1 -19.7,5.4\" fill=\"#d6d5d0\" stroke=\"#d6d5d0\" stroke-width=\"0.7\" stroke-linejoin=\"round\"/></svg>"].map(sv => { const im = new Image(); im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(sv); return im; });
+function glove(x, y, side, curl, alpha) {
+  const im = GLOVES[Math.max(0, Math.min(4, Math.round(curl * 4)))];
+  if (!im.complete) return;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.scale(-side * 0.82, 0.82);   // local +x points toward the paper
+  ctx.drawImage(im, -96 - 22, -60, 176, 124);    // svg viewBox: -96 -60 176 124; knuckles sit ~28px outside the edge
+  ctx.restore();
+}
+requestAnimationFrame(frame);
+
+</script>
+
+</body></html>
