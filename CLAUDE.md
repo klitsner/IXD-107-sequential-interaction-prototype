@@ -10,8 +10,8 @@ Use the AskUserQuestion tool for every question. Do not write questions as a lis
 - For each question, offer 2–4 suggested answers based on what you found in the repository. The user can always pick "Other" to type their own.
 - When you're done asking, summarize the answers and your plan in plain language, then wait for an OK before coding.
 
-## Preview before deploying
-Every change to the live site goes to a preview artifact first:
+## Preview while GitHub Pages deploys
+Every change to the live site is published to a preview artifact too, so it can be viewed while GitHub Pages builds and deploys:
 - Preview artifact: https://claude.ai/artifact/Mec3JZ84YvRGGX1uETS1fT
-- After editing, republish `index.html` to that artifact URL (pass it as `url`), including `css/`, `js/` and `assets/` as supporting files.
-- Share the preview link and wait for the user's OK before committing and pushing to `main` (pushing to `main` deploys to GitHub Pages).
+- After editing, commit and push to `main` (this deploys to GitHub Pages), and republish `index.html` to that artifact URL (pass it as `url`), including any changed files in `css/`, `js/` and `assets/` as supporting files.
+- Share the preview link so the change can be viewed right away; the live site catches up once the GitHub Pages deployment finishes.

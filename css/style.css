@@ -1,4 +1,4 @@
-:root { --ground: #d4d3cf; --dim: #7a7975; color-scheme: light; }
+:root { --ground: #c4c3be; --dim: #7a7975; color-scheme: light; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--ground); overflow: hidden; }
 .stage { position: fixed; inset: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }

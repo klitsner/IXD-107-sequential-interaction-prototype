@@ -155,5 +155,5 @@ function drawBall(ball, cx, cy, r, rot = 0, alpha = 1) {
 
 // ---- the statement sheet, shared by steps 1-3 ----
 const PAPER = '#f4f3ef';          // paper colour (study 2's sheet)
-const GROUND = '#e4e3df';         // the plain light ground of steps 2-3
-const DRAFT_GROUND = '#d4d3cf';   // step 1's slightly darker ground, so the white draft streaks read
+const GROUND = '#d4d3cf';         // the plain ground of steps 2-3
+const DRAFT_GROUND = '#c4c3be';   // step 1's slightly darker ground, so the white draft streaks read
