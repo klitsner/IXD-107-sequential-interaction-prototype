@@ -5,6 +5,8 @@
 // Done when the sheet has been lifted clear of the floor.
 const StepPickUp = (() => {
   const PW = 230, PH = 300, K = 1 / 650, HL = 150, PERIOD = 1.5;
+  const STREAK_LIFE = 1.6, GUST_ACTIVE = 0.954;     // sprite life (s); time per gust spent above 0.15 (s)
+  const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)).join(',');
   const LIFTED_SCALE = 1 + HL * K;          // how big the sheet looks once it is held up (step 2 starts from this)
   let UNDER = null;
   // the underside seen in the curl: the statement itself. Curling the bottom edge back reveals it the right way up,
@@ -49,10 +51,18 @@ const StepPickUp = (() => {
     S.gust = ga < 0 ? 0 : ga < 0.3 ? easeIO(ga / 0.3) : ga < 0.8 ? 1 : ga < 1.1 ? 1 - easeIO((ga - 0.8) / 0.3) : 0;
     if (S.state === 'held') S.gust = 0;
     if (S.wind) S.wind.set(250 + S.gust * 600, 0.012 + S.gust * 0.06, 0.6);
-    if (S.gust > 0.15 && Math.random() < 0.35) {
-      const o = origin(), dir = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[S.windFrom];
-      const across = dir[0] ? o.y + Math.random() * PH : o.x + Math.random() * PW;
-      S.streaks.push({ dir, across, along: 0, len: 60 + Math.random() * 100, v: 420 + Math.random() * 220, bend: (Math.random() - 0.5) * 24, t });
+    // wind sprites (tunable in the control panel: SETTINGS.wind). They spawn while the gust is above 0.15,
+    // which lasts about GUST_ACTIVE seconds, so the spawn rate gives roughly `sprites` per gust.
+    const WS = SETTINGS.wind;
+    if (S.gust > 0.15) {
+      const expected = WS.sprites / GUST_ACTIVE * fdt;
+      const count = Math.floor(expected) + (Math.random() < expected % 1 ? 1 : 0);
+      for (let i = 0; i < count; i++) {
+        const o = origin(), dir = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[S.windFrom];
+        const across = dir[0] ? o.y + Math.random() * PH : o.x + Math.random() * PW;
+        const lo = Math.min(WS.lengthMin, WS.lengthMax), hi = Math.max(WS.lengthMin, WS.lengthMax);
+        S.streaks.push({ dir, across, len: lo + Math.random() * (hi - lo), v: WS.speed + Math.random() * WS.speedVar, bend: (Math.random() - 0.5) * 24, t });
+      }
     }
 
     const hov = S.state === 'floor' && overPaper(S.mouse);
@@ -87,15 +97,18 @@ const StepPickUp = (() => {
 
     // ---- draw ----
     ctx.fillStyle = DRAFT_GROUND; ctx.fillRect(0, 0, W, H);
-    S.streaks = S.streaks.filter(s => t - s.t < 1.6);
+    S.streaks = S.streaks.filter(s => t - s.t < STREAK_LIFE);
+    const ease = EASINGS[WS.easing] || EASINGS.linear, rgb = hexRgb(WS.color);
     for (const s of S.streaks) {
-      s.along += s.v * dt; const a = Math.min(1, (t - s.t) * 3) * (1 - (t - s.t) / 1.6) * 0.85;
+      // distance travelled follows the chosen easing over the sprite's life (linear = constant speed)
+      const age = t - s.t, along = ease(age / STREAK_LIFE) * s.v * STREAK_LIFE;
+      const a = Math.min(1, age * 3) * (1 - age / STREAK_LIFE) * 0.85;
       const [dx, dy] = s.dir, sg = dx || dy;
       const start = sg > 0 ? -60 : (dx ? W : H) + 60;
-      const head = start + sg * s.along, tail = head - sg * s.len;
+      const head = start + sg * along, tail = head - sg * s.len;
       const P = v => dx ? [v, s.across] : [s.across, v];
-      const g = ctx.createLinearGradient(...P(tail), ...P(head)); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, `rgba(255,255,255,${a})`);
-      ctx.strokeStyle = g; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+      const g = ctx.createLinearGradient(...P(tail), ...P(head)); g.addColorStop(0, `rgba(${rgb},0)`); g.addColorStop(1, `rgba(${rgb},${a})`);
+      ctx.strokeStyle = g; ctx.lineWidth = WS.width; ctx.lineCap = 'round';
       const m = P((head + tail) / 2), bend = dx ? [0, s.bend] : [s.bend, 0];
       ctx.beginPath(); ctx.moveTo(...P(tail)); ctx.quadraticCurveTo(m[0] + bend[0], m[1] + bend[1], ...P(head)); ctx.stroke();
     }
